@@ -1,0 +1,37 @@
+from __future__ import annotations
+
+from models import SimulationConfig
+
+
+def build_peak_config() -> SimulationConfig:
+    return SimulationConfig(
+        simulation_horizon=3600.0,           # 1 hora
+        warmup_time=0.0,
+        n_bots=38,
+        n_receiving_operators=4,
+        empty_rack_initial_inventory=60,
+        random_seed=42,
+        effective_speed_mps=0.8,
+        pallet_load_unload_time_s=20.0,
+        turn_time_s=2.0,
+        exit_queue_capacity=None,
+        ready_rack_buffer_capacity=None,
+        consolidation_check_interval_s=0.5,
+    )
+
+
+def build_bau_config() -> SimulationConfig:
+    return SimulationConfig(
+        simulation_horizon=3600.0,           # 1 hora
+        warmup_time=0.0,
+        n_bots=20,
+        n_receiving_operators=4,
+        empty_rack_initial_inventory=40,
+        random_seed=42,
+        effective_speed_mps=0.8,
+        pallet_load_unload_time_s=20.0,
+        turn_time_s=2.0,
+        exit_queue_capacity=None,
+        ready_rack_buffer_capacity=None,
+        consolidation_check_interval_s=0.5,
+    )
