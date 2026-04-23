@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from pprint import pprint
 
 import pandas as pd
@@ -9,173 +10,91 @@ from inputs import InputModel
 from simulation import build_and_run_simulation
 
 
-def build_example_input_model():
-    """
-    Caso base mínimo para probar el simulador.
+def _build_release_time_by_n_os_stop(config, max_os_per_stop: int) -> dict[int, float]:
+    release_base_time_s = config.turn_time_s
+    release_time_per_os_s = config.pallet_load_unload_time_s / max_os_per_stop
+    return {
+        n_os_stop: release_base_time_s + (n_os_stop * release_time_per_os_s)
+        for n_os_stop in range(1, max_os_per_stop + 1)
+    }
 
-    Luego esto se reemplaza por lectura desde Excel / CSV.
+
+def build_input_model_from_excel(
+    excel_path: str | Path,
+    os_per_hour: float = 693.0,
+    distance_between_consecutive_exits_m: float = 5.0,
+):
+    """
+    Construye InputModel leyendo data_entry.xlsx con el contrato de hojas v1 real.
+
+    Notas:
+    - distance_between_consecutive_exits_m queda paramétrico para el layout simétrico.
+    - La distancia de retorno se lee explícitamente desde hoja dedicada
+      (no se asume simetría con la ida).
     """
     config = build_peak_config()
+    excel_path = Path(excel_path)
 
-    # -----------------------------
-    # Demanda
-    # -----------------------------
-    os_per_hour = 693.0
+    destination_df = pd.read_excel(
+        excel_path,
+        sheet_name="destination_distribution",
+        usecols=["destination_id", "probability"],
+    ).dropna(subset=["destination_id", "probability"])
+    destination_distribution = dict(
+        zip(
+            destination_df["destination_id"].astype(str),
+            destination_df["probability"].astype(float),
+        )
+    )
 
-    segment_distribution = {
-        "Regular": 0.336,
-        "Medium": 0.158,
-        "Big": 0.192,
-        "SuperBig": 0.315,
-    }
+    destination_to_exit_df = pd.read_excel(
+        excel_path,
+        sheet_name="destination_to_exit",
+        usecols=["destination_id", "exit_id"],
+    ).dropna(subset=["destination_id", "exit_id"])
+    destination_to_exit = dict(
+        zip(
+            destination_to_exit_df["destination_id"].astype(str),
+            destination_to_exit_df["exit_id"].astype(str),
+        )
+    )
 
-    # 32 salidas
-    exit_distribution = {f"EXIT_{i}": 1 / 32 for i in range(1, 33)}
+    segment_df = pd.read_excel(
+        excel_path,
+        sheet_name="segment_distribution_by_dest",
+        usecols=["destination_id", "segment", "probability"],
+    ).dropna(subset=["destination_id", "segment", "probability"])
 
-    exit_distribution = {"EXIT_1":0.01917, "EXIT_2":0.00816, "EXIT_3":0.01065, 
-                         "EXIT_4":0.00745, "EXIT_5":0.01775, "EXIT_6":0.00639, 
-                         "EXIT_7":0.00568, "EXIT_8":0.00532, "EXIT_9": 0.00355,
-                         "EXIT_10": 0.01207, "EXIT_11": 0.01278, "EXIT_12": 0.02840, 
-                         "EXIT_13": 0.02378, "EXIT_14": 0.01704, "EXIT_15": 0.02662,
-                         "EXIT_16": 0.01171, "EXIT_17": 0.01136, "EXIT_18": 0.01881,
-                         "EXIT_19": 0.00674, "EXIT_20": 0.02201, "EXIT_21": 0.04650,
-                         "EXIT_22": 0.06248, "EXIT_23": 0.00923, "EXIT_24": 0.07916, 
-                         "EXIT_25": 0.05112, "EXIT_26": 0.07242, "EXIT_27": 0.08626,
-                         "EXIT_28": 0.11147, "EXIT_29": 0.08626, "EXIT_30": 0.03905,
-                         "EXIT_31": 0.06212, "EXIT_32": 0.01846
-                         }
+    segment_distribution_by_destination: dict[str, dict[str, float]] = {}
+    for destination_id, group in segment_df.groupby("destination_id"):
+        segment_distribution_by_destination[str(destination_id)] = {
+            str(row.segment): float(row.probability)
+            for row in group.itertuples(index=False)
+        }
 
-    destination_to_exit = {
-        # SCL / RM
-        "SCL 103": "EXIT_1",
-        "SCL 104": "EXIT_1",
-        "SCL 105": "EXIT_1",
+    receiving_distance_df = pd.read_excel(
+        excel_path,
+        sheet_name="travel_receiving_to_exit",
+        usecols=["exit_id", "travel_distance_m"],
+    ).dropna(subset=["exit_id", "travel_distance_m"])
+    travel_distances_receiving_to_exit = dict(
+        zip(
+            receiving_distance_df["exit_id"].astype(str),
+            receiving_distance_df["travel_distance_m"].astype(float),
+        )
+    )
 
-        "PUDAHUEL 175": "EXIT_2",
-        "PUDAHUEL 172": "EXIT_2",
-        "PUDAHUEL 171": "EXIT_2",
-
-        "COLINA": "EXIT_3",
-        "LA PINTANA": "EXIT_3",
-        "TIL TIL": "EXIT_4",
-        "PEÑAFLOR": "EXIT_4",
-        "CALERA DE TANGO": "EXIT_4",
-
-        "BUIN": "EXIT_5",
-        "PAINE": "EXIT_5",
-        "LAMPA": "EXIT_5",
-
-        "PIRQUE": "EXIT_6",
-        "SAN JOSE DE MAIPO": "EXIT_6",
-        "PADRE HURTADO": "EXIT_6",
-
-        "LA GRANJA": "EXIT_7",
-        "LA CISTERNA": "EXIT_7",
-        "ISLA DE MAIPO": "EXIT_7",
-
-        "CERRILLOS": "EXIT_8",
-        "SAN RAMON": "EXIT_8",
-        "EL BOSQUE": "EXIT_8",
-
-        "LO PRADO": "EXIT_9",
-        "PEDRO AGUIRRE CERDA": "EXIT_9",
-        "LO ESPEJO": "EXIT_9",
-
-        "SAN JOAQUIN": "EXIT_10",
-        "INDEPENDENCIA": "EXIT_10",
-        "HUECHURABA": "EXIT_10",
-
-        "CERRO NAVIA": "EXIT_11",
-        "QUINTA NORMAL": "EXIT_11",
-        "ESTACION CENTRAL": "EXIT_11",
-
-        "MAIPU": "EXIT_12",
-        "QUILICURA": "EXIT_12",
-        "RENCA": "EXIT_12",
-
-        "RECOLETA": "EXIT_13",
-        "PUENTE ALTO": "EXIT_13",
-
-        "LO BARNECHEA": "EXIT_14",
-        "VITACURA": "EXIT_14",
-        "LA REINA": "EXIT_14",
-
-        "SAN BERNARDO": "EXIT_15",
-        "LA FLORIDA": "EXIT_15",
-
-        "PEÑALOLEN": "EXIT_16",
-        "PROVIDENCIA": "EXIT_16",
-
-        "MACUL": "EXIT_17",
-        "ÑUÑOA": "EXIT_17",
-
-        "LAS CONDES 204": "EXIT_18",
-        "LAS CONDES 205": "EXIT_18",
-        "LAS CONDES 206": "EXIT_18",
-
-        "SAN MIGUEL": "EXIT_19",
-        "CONCHALI": "EXIT_19",
-
-        # REGIONAL
-        "ARICA": "EXIT_20",
-        "IQUIQUE": "EXIT_20",
-
-        "ANTOFAGASTA": "EXIT_21",
-        "CALAMA": "EXIT_21",
-
-        "COPIAPO": "EXIT_22",
-        "LA SERENA": "EXIT_22",
-
-        "OVALLE": "EXIT_23",
-        "VALPARAISO": "EXIT_23",
-
-        "QUILPUE": "EXIT_24",
-        "VIÑA DEL MAR": "EXIT_24",
-
-        "LA CALERA": "EXIT_25",
-        "LOS ANDES": "EXIT_25",
-
-        "MELIPILLA": "EXIT_26",
-        "RANCAGUA": "EXIT_26",
-
-        "CURICO": "EXIT_27",
-        "TALCA": "EXIT_27",
-
-        "CHILLAN": "EXIT_28",
-        "CONCEPCION": "EXIT_28",
-
-        "LOS ANGELES": "EXIT_29",
-        "TEMUCO": "EXIT_29",
-
-        "VALDIVIA": "EXIT_30",
-        "OSORNO": "EXIT_30",
-
-        "PUERTO MONTT": "EXIT_31",
-        "CASTRO": "EXIT_31",
-
-        "COYHAIQUE": "EXIT_32",
-        "PUNTA ARENAS": "EXIT_32",
-    }
-
-    # -----------------------------
-    # Tiempos de viaje (ejemplo simple)
-    # TODO: reemplazar con tu parametrización real
-    # -----------------------------
-    travel_times_receiving_to_exit = {
-        f"EXIT_{i}": 30.0 + (i * 12.0) for i in range(1, 33)
-    }
-
-    travel_times_exit_to_return = {
-        f"EXIT_{i}": 28.0 + (i * 1.5) for i in range(1, 33)
-    }
-
-    travel_times_between_exits = {}
-    for i in range(1, 33):
-        for j in range(1, 33):
-            if i == j:
-                travel_times_between_exits[(f"EXIT_{i}", f"EXIT_{j}")] = 0.0
-            else:
-                travel_times_between_exits[(f"EXIT_{i}", f"EXIT_{j}")] = abs(j - i) * 5.0 + 8.0
+    return_distance_df = pd.read_excel(
+        excel_path,
+        sheet_name="travel_exit_to_return",
+        usecols=["exit_id", "travel_distance_m"],
+    ).dropna(subset=["exit_id", "travel_distance_m"])
+    travel_distances_exit_to_return = dict(
+        zip(
+            return_distance_df["exit_id"].astype(str),
+            return_distance_df["travel_distance_m"].astype(float),
+        )
+    )
 
     # -----------------------------
     # Tiempos de preparación de rack
@@ -192,25 +111,25 @@ def build_example_input_model():
     # -----------------------------
     # Tiempos de release por stop
     # -----------------------------
-    max_os_per_stop = max(rack_prep_time_by_n_os)
-    release_base_time_s = config.turn_time_s
-    release_time_per_os_s = config.pallet_load_unload_time_s / max_os_per_stop
-    release_time_by_n_os_stop = {
-        n_os_stop: release_base_time_s + (n_os_stop * release_time_per_os_s)
-        for n_os_stop in range(1, max_os_per_stop + 1)
-    }
+    release_time_by_n_os_stop = _build_release_time_by_n_os_stop(
+        config=config,
+        max_os_per_stop=max(rack_prep_time_by_n_os),
+    )
 
     input_model = InputModel(
         config=config,
         os_per_hour=os_per_hour,
-        segment_distribution=segment_distribution,
-        exit_distribution=exit_distribution,
+        destination_distribution=destination_distribution,
         destination_to_exit=destination_to_exit,
-        travel_times_receiving_to_exit=travel_times_receiving_to_exit,
-        travel_times_exit_to_return=travel_times_exit_to_return,
-        travel_times_between_exits=travel_times_between_exits,
+        segment_distribution_by_destination=segment_distribution_by_destination,
+        travel_distances_receiving_to_exit=travel_distances_receiving_to_exit,
+        travel_distances_exit_to_return=travel_distances_exit_to_return,
+        distance_between_consecutive_exits_m=distance_between_consecutive_exits_m,
         rack_prep_time_by_n_os=rack_prep_time_by_n_os,
         release_time_by_n_os_stop=release_time_by_n_os_stop,
+        turns_receiving_to_first_exit=2,
+        turns_between_exits=4,
+        turns_last_exit_to_return=3,
     )
 
     return config, input_model
@@ -270,7 +189,11 @@ def summarize_results(dfs: dict[str, pd.DataFrame], simulation_horizon_s: float)
 
 
 def main():
-    config, input_model = build_example_input_model()
+    config, input_model = build_input_model_from_excel(
+        excel_path="src/inputs_data/data_entry.xlsx",
+        os_per_hour=693.0,
+        distance_between_consecutive_exits_m=5.0,
+    )
 
     metrics = build_and_run_simulation(
         config=config,

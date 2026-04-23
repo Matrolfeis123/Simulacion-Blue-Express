@@ -83,13 +83,13 @@ class WarehouseSimulation:
             yield self.env.timeout(interarrival)
 
             self.os_counter += 1
-            exit_id = self.input_model.sample_exit()
-            destination_id = self.input_model.sample_destination(exit_id=exit_id)
+            destination_id = self.input_model.sample_destination()
+            exit_id = self.input_model.get_exit_for_destination(destination_id)
 
             os_obj = OS(
                 os_id=f"OS_{self.os_counter}",
                 arrival_time=self.env.now,
-                segment=self.input_model.sample_segment(),
+                segment=self.input_model.sample_segment_for_destination(destination_id),
                 destination_id=destination_id,
                 exit_id=exit_id,
                 zone=self.input_model.sample_zone(exit_id),
@@ -167,7 +167,12 @@ class WarehouseSimulation:
 
         # ----- Stops -----
         for stop_idx, exit_id in enumerate(rack.exit_sequence):
-            travel_time = self._get_travel_time_for_stop(rack, stop_idx)
+            distance, n_turns = self._get_distance_and_turns_for_stop(rack, stop_idx)
+            travel_time = self.input_model.get_leg_time_from_distance_and_turns(
+                distance_m=distance,
+                n_turns=n_turns,
+            )
+            rack.travel_distance_total += distance
             rack.travel_time_total += travel_time
             yield self.env.timeout(travel_time)
 
@@ -198,7 +203,12 @@ class WarehouseSimulation:
 
         # ----- Return -----
         self._change_bot_state(bot, "returning")
-        return_time = self._get_return_time(rack)
+        return_distance, return_turns = self._get_return_distance_and_turns(rack)
+        return_time = self.input_model.get_leg_time_from_distance_and_turns(
+            distance_m=return_distance,
+            n_turns=return_turns,
+        )
+        rack.travel_distance_total += return_distance
         rack.travel_time_total += return_time
         yield self.env.timeout(return_time)
 
@@ -254,18 +264,27 @@ class WarehouseSimulation:
 
         return rack
 
-    def _get_travel_time_for_stop(self, rack: RackMission, stop_idx: int) -> float:
+    def _get_distance_and_turns_for_stop(self, rack: RackMission, stop_idx: int) -> tuple[float, int]:
         if stop_idx == 0:
             exit_id = rack.exit_sequence[0]
-            return self.input_model.get_travel_time_receiving_to_exit(exit_id)
+            return (
+                self.input_model.get_distance_receiving_to_exit(exit_id),
+                self.input_model.get_turns_receiving_to_first_exit(),
+            )
 
         prev_exit = rack.exit_sequence[stop_idx - 1]
         curr_exit = rack.exit_sequence[stop_idx]
-        return self.input_model.get_travel_time_between_exits(prev_exit, curr_exit)
+        return (
+            self.input_model.get_distance_between_exits(prev_exit, curr_exit),
+            self.input_model.get_turns_between_exits(),
+        )
 
-    def _get_return_time(self, rack: RackMission) -> float:
+    def _get_return_distance_and_turns(self, rack: RackMission) -> tuple[float, int]:
         last_exit = rack.exit_sequence[-1]
-        return self.input_model.get_travel_time_exit_to_return(last_exit)
+        return (
+            self.input_model.get_distance_exit_to_return(last_exit),
+            self.input_model.get_turns_last_exit_to_return(),
+        )
 
     def _change_bot_state(self, bot: Bot, new_state: str) -> None:
         """

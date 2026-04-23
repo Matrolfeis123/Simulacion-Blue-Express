@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import random
 from collections import Counter
-from typing import Dict, List, Tuple
+from typing import Dict, List
 
 from models import OS, RackMission, SimulationConfig
 
@@ -22,27 +22,48 @@ class InputModel:
         self,
         config: SimulationConfig,
         os_per_hour: float,
-        segment_distribution: Dict[str, float],
-        exit_distribution: Dict[str, float],
+        destination_distribution: Dict[str, float],
         destination_to_exit: Dict[str, str],
-        travel_times_receiving_to_exit: Dict[str, float],
-        travel_times_exit_to_return: Dict[str, float],
-        travel_times_between_exits: Dict[Tuple[str, str], float],
+        segment_distribution_by_destination: Dict[str, Dict[str, float]],
+        travel_distances_receiving_to_exit: Dict[str, float],
+        travel_distances_exit_to_return: Dict[str, float],
+        distance_between_consecutive_exits_m: float,
         rack_prep_time_by_n_os: Dict[int, float],
         release_time_by_n_os_stop: Dict[int, float],
+        turns_receiving_to_first_exit: int = 2,
+        turns_between_exits: int = 4,
+        turns_last_exit_to_return: int = 3,
     ) -> None:
         self.config = config
         self.os_per_hour = os_per_hour
-        self.segment_distribution = self._normalize(segment_distribution)
-        self.exit_distribution = self._normalize(exit_distribution)
-        self.destination_to_exit = destination_to_exit
+        self.destination_distribution = self._normalize(destination_distribution)
+        self.active_destinations = {
+            destination_id
+            for destination_id, probability in self.destination_distribution.items()
+            if probability > 0
+        }
+        self.destination_to_exit = dict(destination_to_exit)
+        self.segment_distribution_by_destination = {}
+        for destination_id, segment_distribution in segment_distribution_by_destination.items():
+            if destination_id in self.active_destinations:
+                self.segment_distribution_by_destination[destination_id] = self._normalize(
+                    segment_distribution
+                )
+            else:
+                self.segment_distribution_by_destination[destination_id] = dict(segment_distribution)
 
-        self.travel_times_receiving_to_exit = travel_times_receiving_to_exit
-        self.travel_times_exit_to_return = travel_times_exit_to_return
-        self.travel_times_between_exits = travel_times_between_exits
+        self.travel_distances_receiving_to_exit = dict(travel_distances_receiving_to_exit)
+        self.travel_distances_exit_to_return = dict(travel_distances_exit_to_return)
+        self.distance_between_consecutive_exits_m = float(distance_between_consecutive_exits_m)
+
+        self.turns_receiving_to_first_exit = int(turns_receiving_to_first_exit)
+        self.turns_between_exits = int(turns_between_exits)
+        self.turns_last_exit_to_return = int(turns_last_exit_to_return)
 
         self.rack_prep_time_by_n_os = rack_prep_time_by_n_os
         self.release_time_by_n_os_stop = release_time_by_n_os_stop
+
+        self._validate_inputs()
 
         self.rng = random.Random(config.random_seed)
 
@@ -57,21 +78,20 @@ class InputModel:
         rate_per_second = self.os_per_hour / 3600.0
         return self.rng.expovariate(rate_per_second)
 
-    def sample_segment(self) -> str:
-        return self._weighted_choice(self.segment_distribution)
+    def sample_destination(self) -> str:
+        return self._weighted_choice(self.destination_distribution)
 
-    def sample_exit(self) -> str:
-        return self._weighted_choice(self.exit_distribution)
+    def get_exit_for_destination(self, destination_id: str) -> str:
+        if destination_id not in self.destination_to_exit:
+            raise KeyError(f"No exit mapping for destination '{destination_id}'")
+        return self.destination_to_exit[destination_id]
 
-    def sample_destination(self, exit_id: str | None = None) -> str:
-        """
-        V1 simple:
-        destino = igual a exit_id si no existe catálogo detallado.
-        Luego esto se puede refinar.
-        """
-        if exit_id is None:
-            exit_id = self.sample_exit()
-        return f"DEST_{exit_id}"
+    def sample_segment_for_destination(self, destination_id: str) -> str:
+        if destination_id not in self.segment_distribution_by_destination:
+            raise KeyError(
+                f"No segment distribution for destination '{destination_id}'"
+            )
+        return self._weighted_choice(self.segment_distribution_by_destination[destination_id])
 
     def sample_zone(self, exit_id: str) -> str:
         exit_num = int(exit_id.split("_")[-1])
@@ -113,19 +133,38 @@ class InputModel:
         return self.release_time_by_n_os_stop[n_os_stop]
 
     # ---------------------------------------------------------------------
-    # Tiempos de viaje
+    # Viaje por distancias + giros
     # ---------------------------------------------------------------------
-    def get_travel_time_receiving_to_exit(self, exit_id: str) -> float:
-        return self.travel_times_receiving_to_exit[exit_id]
+    def get_distance_receiving_to_exit(self, exit_id: str) -> float:
+        return self.travel_distances_receiving_to_exit[exit_id]
 
-    def get_travel_time_between_exits(self, exit_i: str, exit_j: str) -> float:
-        return self.travel_times_between_exits[(exit_i, exit_j)]
+    def get_distance_between_exits(self, exit_i: str, exit_j: str) -> float:
+        i = self._exit_sort_key(exit_i)
+        j = self._exit_sort_key(exit_j)
+        return abs(j - i) * self.distance_between_consecutive_exits_m
 
-    def get_travel_time_exit_to_return(self, exit_id: str) -> float:
-        return self.travel_times_exit_to_return[exit_id]
+    def get_distance_exit_to_return(self, exit_id: str) -> float:
+        return self.travel_distances_exit_to_return[exit_id]
+
+    def get_turns_receiving_to_first_exit(self) -> int:
+        return self.turns_receiving_to_first_exit
+
+    def get_turns_between_exits(self) -> int:
+        return self.turns_between_exits
+
+    def get_turns_last_exit_to_return(self) -> int:
+        return self.turns_last_exit_to_return
+
+    def get_leg_time_from_distance_and_turns(self, distance_m: float, n_turns: int) -> float:
+        travel_time_s = distance_m / self.config.effective_speed_mps
+        turn_time_s = n_turns * self.config.turn_time_s
+        return travel_time_s + turn_time_s
 
     def get_all_exit_ids(self) -> List[str]:
-        return list(self.exit_distribution.keys())
+        return sorted(
+            set(self.destination_to_exit.values()),
+            key=self._exit_sort_key,
+        )
 
     # ---------------------------------------------------------------------
     # Construcción lógica de racks
@@ -212,6 +251,51 @@ class InputModel:
         if total <= 0:
             raise ValueError("Distribution total must be > 0")
         return {k: v / total for k, v in distribution.items()}
+
+    def _validate_inputs(self) -> None:
+        if self.config.effective_speed_mps <= 0:
+            raise ValueError("effective_speed_mps must be > 0")
+
+        if self.distance_between_consecutive_exits_m < 0:
+            raise ValueError("distance_between_consecutive_exits_m must be >= 0")
+
+        if any(v < 0 for v in self.travel_distances_receiving_to_exit.values()):
+            raise ValueError("travel_distances_receiving_to_exit cannot contain negative values")
+
+        if any(v < 0 for v in self.travel_distances_exit_to_return.values()):
+            raise ValueError("travel_distances_exit_to_return cannot contain negative values")
+
+        destination_ids = set(self.destination_distribution.keys())
+        mapped_ids = set(self.destination_to_exit.keys())
+        if not destination_ids.issubset(mapped_ids):
+            missing = sorted(destination_ids - mapped_ids)
+            raise ValueError(f"Missing destination_to_exit mapping for destinations: {missing}")
+
+        segment_ids = set(self.segment_distribution_by_destination.keys())
+        if not self.active_destinations.issubset(segment_ids):
+            missing = sorted(self.active_destinations - segment_ids)
+            raise ValueError(
+                "Missing segment_distribution_by_destination for active destinations: "
+                f"{missing}"
+            )
+
+        required_exits = {self.destination_to_exit[d] for d in self.active_destinations}
+        exits_with_receiving_distance = set(self.travel_distances_receiving_to_exit.keys())
+        exits_with_return_distance = set(self.travel_distances_exit_to_return.keys())
+
+        if not required_exits.issubset(exits_with_receiving_distance):
+            missing = sorted(required_exits - exits_with_receiving_distance)
+            raise ValueError(
+                "Missing receiving->exit distance for exits: "
+                f"{missing}"
+            )
+
+        if not required_exits.issubset(exits_with_return_distance):
+            missing = sorted(required_exits - exits_with_return_distance)
+            raise ValueError(
+                "Missing exit->return distance for exits: "
+                f"{missing}"
+            )
 
     def _exit_sort_key(self, exit_id: str) -> int:
         return int(exit_id.split("_")[-1])
