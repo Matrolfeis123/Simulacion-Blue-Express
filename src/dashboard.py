@@ -284,6 +284,74 @@ def _plot_stops_distribution(
     ax.text(0.98, 0.85, f"1 stop: {pct_1stop:.1f}% de racks",
             transform=ax.transAxes, ha="right", va="top", fontsize=8, color=_SIM)
 
+def _plot_reception_utilization(
+    ax: plt.Axes,
+    reception_ev: pd.DataFrame,
+    rack_creations: pd.DataFrame,
+    config: SimulationConfig,
+    warmup: float,
+    horizon: float,
+) -> None:
+    _style_ax(ax, "Recepción — utilización y espera pre-preparación",
+              xlabel="", ylabel="")
+
+    if reception_ev.empty:
+        _no_data(ax)
+        return
+
+    # ── Utilización de operadores ──────────────────────────────────────────
+    starts = reception_ev[reception_ev["event"] == "start"].copy()
+    ends   = reception_ev[reception_ev["event"] == "end"].copy()
+
+    # Tiempo total de preparación activa
+    prep_pairs = pd.merge(
+        starts[["rack_id", "time"]].rename(columns={"time": "t_start"}),
+        ends[["rack_id", "time"]].rename(columns={"time": "t_end"}),
+        on="rack_id",
+    )
+    total_prep_time = (prep_pairs["t_end"] - prep_pairs["t_start"]).sum()
+    total_operator_time = config.n_receiving_operators * config.effective_horizon
+    util = total_prep_time / total_operator_time * 100.0
+
+    # ── Tiempo de espera en cola de preparación ────────────────────────────
+    # = t_start_service - t_creation_rack
+    if not rack_creations.empty:
+        wait_df = pd.merge(
+            starts[["rack_id", "time"]].rename(columns={"time": "t_service_start"}),
+            rack_creations[["rack_id", "time"]].rename(columns={"time": "t_created"}),
+            on="rack_id",
+        )
+        wait_df["wait_s"] = wait_df["t_service_start"] - wait_df["t_created"]
+        mean_wait = wait_df["wait_s"].mean()
+        p90_wait  = wait_df["wait_s"].quantile(0.90)
+    else:
+        mean_wait = p90_wait = 0.0
+
+    # ── Render: dos barras de diagnóstico ─────────────────────────────────
+    ax2 = ax.twinx()
+
+    categories = ["Util. operadores", "Espera pre-prep\n(media)", "Espera pre-prep\n(p90)"]
+    values_left  = [util, None, None]
+    values_right = [None, mean_wait, p90_wait]
+
+    ax.bar([0], [util], color=_SIM, alpha=0.8, width=0.5, label=f"Util: {util:.1f}%")
+    ax2.bar([1, 2], [mean_wait, p90_wait], color=[_WAIT, _ANA],
+            alpha=0.8, width=0.5, label=f"Espera media: {mean_wait:.1f}s")
+
+    ax.set_xticks([0, 1, 2])
+    ax.set_xticklabels(categories, fontsize=8)
+    ax.set_ylabel("Utilización (%)", fontsize=8)
+    ax2.set_ylabel("Tiempo de espera (s)", fontsize=8)
+
+    ax.set_ylim(0, 110)
+    ax.axhline(100, color=_ANA, linestyle="--", linewidth=1.0, label="Saturación")
+    ax.set_title(
+        f"Recepción — util: {util:.1f}%  ·  espera media: {mean_wait:.1f}s  ·  p90: {p90_wait:.1f}s",
+        fontsize=10, fontweight="bold", pad=8
+    )
+    ax.legend(fontsize=7, frameon=False, loc="upper left")
+    ax2.spines["top"].set_visible(False)
+
 
 # ── Entry point ───────────────────────────────────────────────────────────────
 def build_dashboard(
@@ -294,7 +362,7 @@ def build_dashboard(
     output_path: str | Path = "simulation_dashboard.png",
 ) -> Path:
     """
-    Genera dashboard de 6 paneles comparando simulación vs modelo analítico.
+    Genera dashboard de 7 paneles comparando simulación vs modelo analítico.
 
     Claves válidas para analytical_targets:
         throughput_os_per_hour  → throughput objetivo (OS/h)
@@ -309,6 +377,8 @@ def build_dashboard(
     snapshots = dfs.get("state_snapshots", pd.DataFrame())
     queue_ev  = dfs.get("exit_queue_events", pd.DataFrame())
     audit     = dfs.get("travel_audit_events", pd.DataFrame())
+    reception_ev   = dfs.get("reception_events", pd.DataFrame())
+    rack_creations = dfs.get("rack_creations", pd.DataFrame())
 
     # Aplicar filtro de warmup sobre los DataFrames que llegan al dashboard
     # (summarize_results ya los filtró, pero las funciones de plot
@@ -317,8 +387,12 @@ def build_dashboard(
         completed = completed[completed["pickup_time"] >= warmup].copy()
     if not queue_ev.empty and warmup > 0:
         queue_ev = queue_ev[queue_ev["time"] >= warmup].copy()
+    if not reception_ev.empty and warmup > 0:
+        reception_ev = reception_ev[reception_ev["time"] >= warmup].copy()
+    if not rack_creations.empty and warmup > 0:
+        rack_creations = rack_creations[rack_creations["time"] >= warmup].copy()
 
-    fig, axes = plt.subplots(3, 2, figsize=(14, 13))
+    fig, axes = plt.subplots(4, 2, figsize=(14, 16))
     fig.patch.set_facecolor("white")
 
     warmup_label = f"warmup = {warmup:.0f}s" if warmup > 0 else "sin warmup"
@@ -333,6 +407,15 @@ def build_dashboard(
     _plot_queue_by_exit(axes[1, 1], queue_ev, analytical_targets)
     _plot_buffers(axes[2, 0], snapshots, warmup)
     _plot_stops_distribution(axes[2, 1], completed)
+    _plot_reception_utilization(
+        axes[3, 0],
+        reception_ev,
+        rack_creations,
+        config,
+        warmup,
+        horizon,
+    )
+    axes[3, 1].axis("off")
 
     plt.tight_layout(rect=[0, 0, 1, 0.996])
 

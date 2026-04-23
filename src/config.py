@@ -6,9 +6,9 @@ from models import SimulationConfig
 def build_peak_config() -> SimulationConfig:
     return SimulationConfig(
         simulation_horizon=2*3600.0,           # 1 hora
-        warmup_time= 3600.0,              # 1 hora de warmup para alcanzar estado estacionario
+        warmup_time= 500.0,              # 1 hora de warmup para alcanzar estado estacionario
         n_bots=45,
-        n_receiving_operators=20,
+        n_receiving_operators=4,
         empty_rack_initial_inventory=60,
         random_seed=42,
         effective_speed_mps=0.9,
