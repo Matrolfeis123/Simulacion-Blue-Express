@@ -5,13 +5,13 @@ from models import SimulationConfig
 
 def build_peak_config() -> SimulationConfig:
     return SimulationConfig(
-        simulation_horizon=2*3600.0,           # 1 hora
+        simulation_horizon=1.138888889*3600.0,           # 1 hora
         warmup_time= 500.0,              # 1 hora de warmup para alcanzar estado estacionario
         n_bots=45,
-        n_receiving_operators=4,
+        n_receiving_operators=20,
         empty_rack_initial_inventory=60,
         random_seed=42,
-        effective_speed_mps=0.9,
+        effective_speed_mps=1,
         pallet_load_unload_time_s=30.0,
         turn_time_s=5.0,
         exit_queue_capacity=None,
