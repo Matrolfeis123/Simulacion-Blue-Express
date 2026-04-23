@@ -77,10 +77,14 @@ class WarehouseSimulation:
     def os_arrival_process(self):
         """
         Genera OS con proceso de Poisson agregado.
+        Corre durante todo el horizonte total (warmup + medición).
         """
         while self.env.now < self.config.simulation_horizon:
             interarrival = self.input_model.sample_interarrival_time(self.env.now)
             yield self.env.timeout(interarrival)
+
+            if self.env.now >= self.config.simulation_horizon:
+                break
 
             self.os_counter += 1
             destination_id = self.input_model.sample_destination()
@@ -100,6 +104,7 @@ class WarehouseSimulation:
     def consolidation_process(self):
         """
         Revisa periódicamente el buffer de OS e intenta formar racks.
+        Corre durante todo el horizonte total (warmup + medición).
         """
         while self.env.now < self.config.simulation_horizon:
             rack = self._try_build_rack()
@@ -144,7 +149,6 @@ class WarehouseSimulation:
         Cada bot espera un rack listo, ejecuta la misión y vuelve a esperar.
         """
         while True:
-            # Bot espera rack listo
             self._change_bot_state(bot, "waiting_rack")
             wait_start = self.env.now
 
@@ -207,7 +211,6 @@ class WarehouseSimulation:
                 }
             )
 
-            # Llega a la salida y espera servicio si corresponde
             arrival_to_exit = self.env.now
             self._change_bot_state(bot, "waiting_exit")
 
@@ -316,7 +319,7 @@ class WarehouseSimulation:
 
     def snapshot_process(self):
         """
-        Guarda snapshots periódicos para monitorear buffers y acumulación.
+        Guarda snapshots periódicos durante todo el horizonte total.
         """
         while self.env.now < self.config.simulation_horizon:
             self.metrics.record_state_snapshot(
@@ -326,15 +329,12 @@ class WarehouseSimulation:
                 ready_racks_len=len(self.ready_racks.items),
                 empty_racks_level=self.empty_racks.level,
             )
-            yield self.env.timeout(60.0)  # snapshot cada 60s
+            yield self.env.timeout(60.0)
 
     # =========================================================
     # Helpers
     # =========================================================
     def _try_build_rack(self) -> Optional[RackMission]:
-        """
-        Wrapper sobre InputModel para formar racks desde el buffer de OS.
-        """
         if not self.os_buffer:
             return None
 
@@ -376,9 +376,6 @@ class WarehouseSimulation:
         )
 
     def _change_bot_state(self, bot: Bot, new_state: str) -> None:
-        """
-        Actualiza tiempos por estado de forma simple.
-        """
         now = self.env.now
         elapsed = now - bot.last_state_change
 
@@ -406,5 +403,6 @@ def build_and_run_simulation(
     )
     simulation.start()
 
+    # La simulación corre durante simulation_horizon (warmup incluido)
     env.run(until=config.simulation_horizon)
     return metrics

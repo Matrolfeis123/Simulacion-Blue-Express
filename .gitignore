@@ -5,3 +5,5 @@
 /rack_creations.csv
 /reception_events.csv
 /state_snapshots.csv
+
+*.csv

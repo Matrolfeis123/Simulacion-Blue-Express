@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, List, Optional
 
 
@@ -24,11 +24,8 @@ class RackMission:
     exit_sequence: List[str]
     n_stops: int
     segment_mix: Dict[str, int]
-
-    # Clave para la V1: cuántas OS se descargan en cada salida
     os_count_by_exit: Dict[str, int]
 
-    # Tiempos emergentes
     ready_time: float = 0.0
     pickup_time: float = 0.0
     return_time: float = 0.0
@@ -37,8 +34,6 @@ class RackMission:
     release_time_total: float = 0.0
     queue_time_total: float = 0.0
     cycle_time_total: float = 0.0
-
-    # Estado
     status: str = "building"
 
 
@@ -56,6 +51,21 @@ class Bot:
 
 @dataclass
 class SimulationConfig:
+    """
+    Relacion entre tiempos
+    ----------------------
+    simulation_horizon : tiempo TOTAL que corre la simulacion (segundos).
+    warmup_time        : periodo inicial excluido de KPIs (segundos).
+                         Debe ser estrictamente menor que simulation_horizon.
+
+    Ventana de medicion efectiva = simulation_horizon - warmup_time
+
+    Ejemplos
+    --------
+    Sin warmup:        horizon=3600, warmup=0    -> mide 3600 s
+    Warmup 10 min:     horizon=3600, warmup=600  -> mide 3000 s
+    Warmup 1h + 1h:    horizon=7200, warmup=3600 -> mide 3600 s
+    """
     simulation_horizon: float
     warmup_time: float
     n_bots: int
@@ -63,16 +73,25 @@ class SimulationConfig:
     empty_rack_initial_inventory: int
     random_seed: int = 42
 
-    # Parámetros bot
-    effective_speed_mps: float = 0.8
-    pallet_load_unload_time_s: float = 20.0
-    turn_time_s: float = 2.0
+    effective_speed_mps: float = 0.9
+    pallet_load_unload_time_s: float = 30.0
+    turn_time_s: float = 5.0
 
-    # Capacidad de cola por salida (None = infinita)
     exit_queue_capacity: Optional[int] = None
-
-    # Capacidad ready buffer (None = infinita)
     ready_rack_buffer_capacity: Optional[int] = None
-
-    # Polling consolidación
     consolidation_check_interval_s: float = 0.5
+
+    def __post_init__(self) -> None:
+        if self.warmup_time < 0:
+            raise ValueError("warmup_time no puede ser negativo.")
+        if self.warmup_time >= self.simulation_horizon:
+            raise ValueError(
+                f"warmup_time ({self.warmup_time}s) debe ser menor que "
+                f"simulation_horizon ({self.simulation_horizon}s). "
+                f"Ventana de medicion efectiva seria <= 0."
+            )
+
+    @property
+    def effective_horizon(self) -> float:
+        """Duracion de la ventana de medicion (segundos)."""
+        return self.simulation_horizon - self.warmup_time
