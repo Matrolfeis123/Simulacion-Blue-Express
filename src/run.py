@@ -22,7 +22,7 @@ def _build_release_time_by_n_os_stop(config, max_os_per_stop: int) -> dict[int, 
 def build_input_model_from_excel(
     excel_path: str | Path,
     os_per_hour: float = 693.0,
-    distance_between_consecutive_exits_m: float = 5.0,
+    distance_between_consecutive_exits_m: float = 5.2,
 ):
     """
     Construye InputModel leyendo data_entry.xlsx con el contrato de hojas v1 real.
@@ -101,11 +101,11 @@ def build_input_model_from_excel(
     # TODO: reemplazar con tu lógica real
     # -----------------------------
     rack_prep_time_by_n_os = {
-        1: 8.0,
-        2: 12.0,
-        3: 16.0,
-        4: 20.0,
-        5: 24.0,
+        1: 20,
+        2: 25.0,
+        3: 30.0,
+        4: 40.0,
+        5: 50.0,
     }
 
     # -----------------------------
