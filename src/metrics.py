@@ -15,6 +15,7 @@ class MetricsCollector:
         self.reception_events: List[Dict[str, Any]] = []
         self.exit_queue_events: List[Dict[str, Any]] = []
         self.exit_service_events: List[Dict[str, Any]] = []
+        self.travel_audit_events: List[Dict[str, Any]] = []
         self.completed_racks: List[Dict[str, Any]] = []
         self.state_snapshots: List[Dict[str, Any]] = []
 
@@ -89,6 +90,9 @@ class MetricsCollector:
             }
         )
 
+    def record_travel_audit_event(self, event: Dict[str, Any]) -> None:
+        self.travel_audit_events.append(event)
+
     def record_completed_rack(self, rack: RackMission, time: float) -> None:
         self.completed_racks.append(
             {
@@ -134,6 +138,7 @@ class MetricsCollector:
             "reception_events": pd.DataFrame(self.reception_events),
             "exit_queue_events": pd.DataFrame(self.exit_queue_events),
             "exit_service_events": pd.DataFrame(self.exit_service_events),
+            "travel_audit_events": pd.DataFrame(self.travel_audit_events),
             "completed_racks": pd.DataFrame(self.completed_racks),
             "state_snapshots": pd.DataFrame(self.state_snapshots),
         }

@@ -167,14 +167,45 @@ class WarehouseSimulation:
 
         # ----- Stops -----
         for stop_idx, exit_id in enumerate(rack.exit_sequence):
+            travel_start = self.env.now
             distance, n_turns = self._get_distance_and_turns_for_stop(rack, stop_idx)
             travel_time = self.input_model.get_leg_time_from_distance_and_turns(
                 distance_m=distance,
                 n_turns=n_turns,
             )
+
+            if stop_idx == 0:
+                leg_type = "receiving_to_first_exit"
+                leg_from = "receiving"
+                leg_to = exit_id
+            else:
+                leg_type = "between_exits"
+                leg_from = rack.exit_sequence[stop_idx - 1]
+                leg_to = exit_id
+
             rack.travel_distance_total += distance
             rack.travel_time_total += travel_time
             yield self.env.timeout(travel_time)
+            travel_end = self.env.now
+
+            self.metrics.record_travel_audit_event(
+                {
+                    "time": travel_end,
+                    "event_type": "travel_leg",
+                    "bot_id": bot.bot_id,
+                    "rack_id": rack.rack_id,
+                    "stop_index": stop_idx + 1,
+                    "exit_id": exit_id,
+                    "leg_type": leg_type,
+                    "from_node": leg_from,
+                    "to_node": leg_to,
+                    "travel_start": travel_start,
+                    "travel_end": travel_end,
+                    "distance_m": distance,
+                    "n_turns": n_turns,
+                    "travel_time_s": travel_time,
+                }
+            )
 
             # Llega a la salida y espera servicio si corresponde
             arrival_to_exit = self.env.now
@@ -190,6 +221,7 @@ class WarehouseSimulation:
                 n_os_stop = rack.os_count_by_exit[exit_id]
                 release_time = self.input_model.get_release_time(n_os_stop)
                 rack.release_time_total += release_time
+                service_start = self.env.now
 
                 self.metrics.record_exit_service(
                     exit_id=exit_id,
@@ -200,9 +232,27 @@ class WarehouseSimulation:
 
                 self._change_bot_state(bot, "traveling")
                 yield self.env.timeout(release_time)
+                service_end = self.env.now
+
+                self.metrics.record_travel_audit_event(
+                    {
+                        "time": service_end,
+                        "event_type": "exit_stop_service",
+                        "bot_id": bot.bot_id,
+                        "rack_id": rack.rack_id,
+                        "stop_index": stop_idx + 1,
+                        "exit_id": exit_id,
+                        "queue_delay_s": queue_delay,
+                        "service_start": service_start,
+                        "service_end": service_end,
+                        "release_time_s": release_time,
+                        "n_os_stop": n_os_stop,
+                    }
+                )
 
         # ----- Return -----
         self._change_bot_state(bot, "returning")
+        return_start = self.env.now
         return_distance, return_turns = self._get_return_distance_and_turns(rack)
         return_time = self.input_model.get_leg_time_from_distance_and_turns(
             distance_m=return_distance,
@@ -211,6 +261,26 @@ class WarehouseSimulation:
         rack.travel_distance_total += return_distance
         rack.travel_time_total += return_time
         yield self.env.timeout(return_time)
+        return_end = self.env.now
+
+        self.metrics.record_travel_audit_event(
+            {
+                "time": return_end,
+                "event_type": "return_leg",
+                "bot_id": bot.bot_id,
+                "rack_id": rack.rack_id,
+                "stop_index": rack.n_stops,
+                "exit_id": rack.exit_sequence[-1],
+                "leg_type": "last_exit_to_return",
+                "from_node": rack.exit_sequence[-1],
+                "to_node": "return",
+                "travel_start": return_start,
+                "travel_end": return_end,
+                "distance_m": return_distance,
+                "n_turns": return_turns,
+                "travel_time_s": return_time,
+            }
+        )
 
         # Deja rack vacío
         yield self.empty_racks.put(1)
@@ -222,6 +292,25 @@ class WarehouseSimulation:
         bot.trip_count += 1
         bot.current_rack_id = None
         self._change_bot_state(bot, "idle")
+
+        self.metrics.record_travel_audit_event(
+            {
+                "time": self.env.now,
+                "event_type": "trip_completed",
+                "bot_id": bot.bot_id,
+                "rack_id": rack.rack_id,
+                "n_os": rack.n_os,
+                "n_stops": rack.n_stops,
+                "trip_start": trip_start,
+                "trip_end": self.env.now,
+                "trip_duration_s": self.env.now - trip_start,
+                "travel_distance_total": rack.travel_distance_total,
+                "travel_time_total": rack.travel_time_total,
+                "queue_time_total": rack.queue_time_total,
+                "release_time_total": rack.release_time_total,
+                "cycle_time_total": rack.cycle_time_total,
+            }
+        )
 
         self.metrics.record_completed_rack(rack, self.env.now)
 

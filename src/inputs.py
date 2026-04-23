@@ -253,6 +253,9 @@ class InputModel:
         return {k: v / total for k, v in distribution.items()}
 
     def _validate_inputs(self) -> None:
+        if self.os_per_hour <= 0:
+            raise ValueError("os_per_hour must be > 0")
+
         if self.config.effective_speed_mps <= 0:
             raise ValueError("effective_speed_mps must be > 0")
 
