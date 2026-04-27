@@ -11,7 +11,7 @@ def build_peak_config() -> SimulationConfig:
         n_receiving_operators=20,
         empty_rack_initial_inventory=60,
         random_seed=42,
-        effective_speed_mps=1,
+        effective_speed_mps=0.9,
         pallet_load_unload_time_s=30.0,
         turn_time_s=5.0,
         exit_queue_capacity=None,

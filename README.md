@@ -61,6 +61,8 @@ Estimación: 2 – 4 horas
 
 Dependencias: ninguna
 
+BLOQUE 1 LISTO, VALIDADAS DISTRIBUCION DE OS POR SALIDA, Y DIST DE SEGMENTOS POR SALIDA. SOLO FALTA VALIDAR LAS DISTANCIAS Y TIEMPOS DE VIAJE.
+
 🟠 BLOQUE 2 — Lógica operativa 4. Validación de movimiento de bots (CRÍTICO)
 
 Prioridad: Alta
