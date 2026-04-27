@@ -250,7 +250,7 @@ def summarize_results(
 def run_replications(
     config: SimulationConfig,
     input_model: InputModel,
-    n_replications: int = 10,
+    n_replications: int = 1,
     base_seed: int = 42,
 ) -> list[dict]:
     """
@@ -393,7 +393,7 @@ def main():
 
     analytical_targets = {
         "throughput_os_per_hour": 693.0,
-        # "cycle_time_s":         ...,   # completar desde modelo analítico
+        "cycle_time_s": 299,   # completar desde modelo analítico, calculado como tiempo ponderado del sistema
         # "bot_utilization":      ...,   # completar desde modelo analítico
         # "mean_queue_delay_s":   ...,   # completar desde modelo analítico
     }
