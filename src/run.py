@@ -14,7 +14,7 @@ from models import SimulationConfig
 from simulation import build_and_run_simulation
 
 
-# ── Helpers de tiempo de release ───────────────────────────────────────────────
+# -- Helpers de tiempo de release -----------------------------------------------
 def _build_release_time_by_n_os_stop(
     config: SimulationConfig, max_os_per_stop: int
 ) -> dict[int, float]:
@@ -26,7 +26,7 @@ def _build_release_time_by_n_os_stop(
     }
 
 
-# ── Lectura de Excel ───────────────────────────────────────────────────────────
+# -- Lectura de Excel -----------------------------------------------------------
 def build_input_model_from_excel(
     excel_path: str | Path,
     config: SimulationConfig,
@@ -108,7 +108,7 @@ def build_input_model_from_excel(
     )
 
 
-# ── Filtro de warmup ───────────────────────────────────────────────────────────
+# -- Filtro de warmup -----------------------------------------------------------
 def _filter_by_warmup(
     dfs: dict[str, pd.DataFrame], config: SimulationConfig
 ) -> dict[str, pd.DataFrame]:
@@ -136,7 +136,7 @@ def _filter_by_warmup(
     return filtered
 
 
-# ── Resumen de KPIs ────────────────────────────────────────────────────────────
+# -- Resumen de KPIs ------------------------------------------------------------
 def summarize_results(
     dfs: dict[str, pd.DataFrame],
     config: SimulationConfig,
@@ -152,7 +152,7 @@ def summarize_results(
         "effective_horizon_s": eff_time,
     }
 
-    # ── Racks completados ──────────────────────────────────────────────────
+    # -- Racks completados --------------------------------------------------
     completed = mdfs["completed_racks"]
     if not completed.empty:
         total_racks = len(completed)
@@ -181,7 +181,7 @@ def summarize_results(
             "mean_queue_time_trip_s": 0.0, "mean_release_time_trip_s": 0.0,
         })
 
-    # ── Utilización de bots ────────────────────────────────────────────────
+    # -- Utilizacion de bots ------------------------------------------------
     audit = mdfs["travel_audit_events"]
     trips = pd.DataFrame()
     if not audit.empty and "event_type" in audit.columns:
@@ -208,7 +208,7 @@ def summarize_results(
             "bot_util_idle_frac": 1.0, "total_trips": 0,
         })
 
-    # ── Colas en salidas ───────────────────────────────────────────────────
+    # -- Colas en salidas ---------------------------------------------------
     queue_ev = mdfs["exit_queue_events"]
     if not queue_ev.empty:
         summary.update({
@@ -223,7 +223,7 @@ def summarize_results(
             "max_exit_queue_delay_s":  0.0,
         })
 
-    # ── Snapshots de buffer ────────────────────────────────────────────────
+    # -- Snapshots de buffer ------------------------------------------------
     snaps = mdfs["state_snapshots"]
     if not snaps.empty:
         summary.update({
@@ -246,7 +246,7 @@ def summarize_results(
     return summary
 
 
-# ── Múltiples réplicas ─────────────────────────────────────────────────────────
+# -- Multiples replicas ---------------------------------------------------------
 def run_replications(
     config: SimulationConfig,
     input_model: InputModel,
@@ -254,24 +254,24 @@ def run_replications(
     base_seed: int = 42,
 ) -> list[dict]:
     """
-    Ejecuta N réplicas variando únicamente la semilla aleatoria.
+    Ejecuta N replicas variando unicamente la semilla aleatoria.
 
-    Para cada réplica:
+    Para cada replica:
       - Se crea una nueva SimulationConfig con random_seed = base_seed + i
       - Se resetea el RNG del InputModel (sin releer Excel)
-      - Se corre la simulación completa y se calcula el summary
+      - Se corre la simulacion completa y se calcula el summary
 
-    Retorna lista de summaries (uno por réplica) con campo 'replica' agregado.
+    Retorna lista de summaries (uno por replica) con campo 'replica' agregado.
     """
     summaries = []
-    print(f"\nCorriendo {n_replications} réplicas...")
-    print(f"{'Réplica':>8}  {'Throughput':>12}  {'Cycle p50':>10}  {'Bot util':>9}  {'Idle':>7}")
-    print("─" * 58)
+    print(f"\nCorriendo {n_replications} replicas...")
+    print(f"{'Replica':>8}  {'Throughput':>12}  {'Cycle p50':>10}  {'Bot util':>9}  {'Idle':>7}")
+    print("-" * 58)
 
     for i in range(n_replications):
         seed = base_seed + i
 
-        # Nueva config con semilla distinta (todo lo demás igual)
+        # Nueva config con semilla distinta (todo lo demas igual)
         rep_config = replace(config, random_seed=seed)
 
         # Resetear RNG del input model (evita releer Excel)
@@ -291,7 +291,7 @@ def run_replications(
             f"{summary['bot_util_idle_frac']*100:>6.1f}%"
         )
 
-    print("─" * 58)
+    print("-" * 58)
     return summaries
 
 
@@ -301,7 +301,7 @@ def aggregate_replications(summaries: list[dict]) -> dict:
 
     IC95% = mean ± t(0.025, N-1) × std / √N
 
-    t crítico: usa scipy si está disponible, si no usa aproximación normal (z=1.96).
+    t critico: usa scipy si esta disponible, si no usa aproximacion normal (z=1.96).
     Para N ≥ 10 la diferencia es < 0.15 puntos.
     """
     try:
@@ -310,7 +310,7 @@ def aggregate_replications(summaries: list[dict]) -> dict:
             return float(t_dist.ppf(0.975, df=n - 1))
     except ImportError:
         def t_crit(n: int) -> float:
-            # Aproximación t → z para N grande; conservador para N pequeño
+            # Aproximacion t → z para N grande; conservador para N pequeno
             table = {2: 12.71, 3: 4.30, 4: 3.18, 5: 2.78, 6: 2.57,
                      7: 2.45, 8: 2.36, 9: 2.31, 10: 2.26}
             return table.get(n, 1.96)
@@ -336,20 +336,20 @@ def aggregate_replications(summaries: list[dict]) -> dict:
 
 
 def _print_aggregated_summary(agg: dict, analytical_targets: dict) -> None:
-    """Imprime tabla de KPIs clave con IC95% y comparación vs analítico."""
+    """Imprime tabla de KPIs clave con IC95% y comparacion vs analitico."""
     N  = agg["n_replications"]
     tc = agg["t_critical_95"]
     print(f"\n{'='*62}")
-    print(f"  Resumen agregado — {N} réplicas  (t₀.₀₂₅,{N-1} = {tc:.3f})")
+    print(f"  Resumen agregado - {N} replicas  (t0.025,{N-1} = {tc:.3f})")
     print(f"{'='*62}")
-    print(f"  {'KPI':<30} {'Media':>9}  {'IC95% ±':>9}  {'vs analítico':>13}")
+    print(f"  {'KPI':<30} {'Media':>9}  {'IC95% ±':>9}  {'vs analitico':>13}")
     print(f"  {'-'*58}")
 
     kpis = [
         ("throughput_os_per_hour",  "Throughput (OS/h)",    "throughput_os_per_hour"),
         ("p50_cycle_time_s",        "Cycle time p50 (s)",   "cycle_time_s"),
         ("mean_cycle_time_s",       "Cycle time media (s)",  None),
-        ("bot_utilization",         "Bot utilización",      "bot_utilization"),
+        ("bot_utilization",         "Bot utilizacion",      "bot_utilization"),
         ("bot_util_idle_frac",      "Bot idle",              None),
         ("mean_exit_queue_delay_s", "Queue delay media (s)", "mean_queue_delay_s"),
     ]
@@ -368,20 +368,20 @@ def _print_aggregated_summary(agg: dict, analytical_targets: dict) -> None:
 
         if target_key and target_key in analytical_targets:
             tval = analytical_targets[target_key]
-            within = "✓ dentro CI" if lo <= tval <= hi else "✗ fuera CI"
+            within = "OK dentro CI" if lo <= tval <= hi else "X fuera CI"
             tval_fmt = f"{tval*100:.1f}%" if is_pct else f"{tval:.1f}"
             vs = f"{tval_fmt} [{within}]"
         else:
-            vs = "—"
+            vs = "-"
 
         print(f"  {label:<30} {fmt:>9}  {fmt_ci:>9}  {vs:>13}")
 
     print(f"{'='*62}\n")
 
 
-# ── Main ───────────────────────────────────────────────────────────────────────
+# -- Main -----------------------------------------------------------------------
 def main():
-    # ── Configuración ──────────────────────────────────────────────────────
+    # -- Configuracion ------------------------------------------------------
     config = build_peak_config()
 
     input_model = build_input_model_from_excel(
@@ -393,21 +393,21 @@ def main():
 
     analytical_targets = {
         "throughput_os_per_hour": 693.0,
-        "cycle_time_s": 299,   # completar desde modelo analítico, calculado como tiempo ponderado del sistema
-        # "bot_utilization":      ...,   # completar desde modelo analítico
-        # "mean_queue_delay_s":   ...,   # completar desde modelo analítico
+        "cycle_time_s": 299,   # completar desde modelo analitico, calculado como tiempo ponderado del sistema
+        # "bot_utilization":      ...,   # completar desde modelo analitico
+        # "mean_queue_delay_s":   ...,   # completar desde modelo analitico
     }
     analytical_targets = {k: v for k, v in analytical_targets.items() if v is not None}
 
     Path("outputs").mkdir(exist_ok=True)
 
-    # ── Réplica única (dashboard detallado) ────────────────────────────────
-    print("Corriendo réplica base para dashboard detallado...")
+    # -- Replica unica (dashboard detallado) --------------------------------
+    print("Corriendo replica base para dashboard detallado...")
     metrics = build_and_run_simulation(config, input_model)
     dfs     = metrics.to_dataframes()
     summary = summarize_results(dfs, config)
 
-    print("\n=== Réplica base ===")
+    print("\n=== Replica base ===")
     pprint({k: v for k, v in summary.items() if not k.endswith("_s") or "time" in k})
 
     build_dashboard(
@@ -422,10 +422,10 @@ def main():
         if not df.empty:
             df.to_csv(f"outputs/{name}.csv", index=False)
 
-    # ── Múltiples réplicas ─────────────────────────────────────────────────
-    N_REPLICATIONS = 10   # ← ajustar según tiempo disponible
+    # -- Multiples replicas -------------------------------------------------
+    N_REPLICATIONS = 10   # ← ajustar segun tiempo disponible
 
-    # Resetear RNG del input_model al seed base antes de las réplicas
+    # Resetear RNG del input_model al seed base antes de las replicas
     input_model.rng = _random.Random(config.random_seed)
 
     summaries = run_replications(
@@ -438,7 +438,7 @@ def main():
 
     _print_aggregated_summary(agg, analytical_targets)
 
-    # Dashboard de réplicas
+    # Dashboard de replicas
     build_replications_dashboard(
         summaries=summaries,
         agg=agg,
@@ -447,7 +447,7 @@ def main():
         output_path="outputs/replications_dashboard.png",
     )
 
-    # CSV con una fila por réplica
+    # CSV con una fila por replica
     pd.DataFrame(summaries).to_csv("outputs/replications_summary.csv", index=False)
     print("Outputs exportados en outputs/")
 

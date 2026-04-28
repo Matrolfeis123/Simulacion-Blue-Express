@@ -1,0 +1,8 @@
+{
+  "method": "Welch (1983)",
+  "convergence_time_s": 150.0,
+  "convergence_time_min": 2.5,
+  "warmup_recommended_s": 1800,
+  "warmup_recommended_min": 30.0,
+  "justification": "Basado en analisis de 10 replicas de 3.0 horas. El throughput converge al valor objetivo de 693 OS/h alrededor de los 2 minutos. Se aplica factor conservador de 1.2x para asegurar estado estacionario completo."
+}
