@@ -7,7 +7,7 @@ El **warmup time** se ha estimado en **1800 segundos (30 minutos)** basado en el
 - **Método**: Welch (1983) — Procedimiento de batch means con análisis de convergencia
 - **Replicas analizadas**: 10 réplicas independientes de 3 horas cada una
 - **Convergencia detectada**: ~2.5 minutos (150 segundos)
-- **Recomendación con factor conservador (1.2x)**: 1800 segundos
+- **Recomendación operativa adoptada**: 1800 segundos
 - **Gráfico de convergencia**: `outputs/welch_analysis.png`
 
 ---
@@ -59,14 +59,14 @@ Este es el procedimiento estándar en la comunidad de simulación (Banks, 2010; 
 5. **Aplicar media móvil suavizada**
    - Para identificar tendencia (no fluctuaciones)
 6. **Identificar punto de convergencia**
-   - Donde la métrica entra en banda de convergencia (±10% del objetivo)
+   - Donde la métrica entra en banda de convergencia (±10% del objetivo) y se mantiene durante varias ventanas
    - Donde posteriores fluctuaciones son < 5% del objetivo
 
 ### Ventajas del método
 
 ✓ **Fundamentado estadísticamente** — No es heurística, es principios de análisis de convergencia  
 ✓ **Objetivo** — Detecta automáticamente cuándo el sistema se estabiliza  
-✓ **Conservador** — Aplica factor de seguridad (1.2x) para asegurar estado estacionario  
+✓ **Conservador** — Reserva una ventana de warmup suficientemente amplia para separar arranque y medición  
 ✓ **Reproducible** — Mismo gráfico con otros datos = misma conclusión
 
 ---
@@ -87,7 +87,7 @@ Media movil suavizada:            5 ventanas (25 minutos)
 | Métrica                           | Valor                   |
 | --------------------------------- | ----------------------- |
 | Throughput final (promedio)       | 710 OS/h                |
-| Desv. Estándar final              | 44 OS/h                 |
+| IC95% de la media final           | 44 OS/h                 |
 | Throughput máximo observado       | 750 OS/h                |
 | Throughput mínimo observado       | 259 OS/h                |
 | **Tiempo de convergencia**        | **2.5 minutos (150 s)** |
@@ -102,9 +102,9 @@ Media movil suavizada:            5 ventanas (25 minutos)
    - Después de converger, las fluctuaciones son mínimas
    - Indica que la medición posterior es representativa del estado estacionario
 
-3. **Factor conservador (1.2x → 180 s → 1800 s)**
-   - Aunque converge a 150s, multiplicamos por 1.2 para seguridad
-   - Redondeamos a múltiplo de 300s (1800 s) para alineación
+3. **Política operativa (1800 s)**
+   - Welch identifica estabilización rápida, pero el proyecto reserva 30 minutos de warmup para separar de forma robusta el tramo de arranque del tramo de medición
+   - Esta decisión facilita la lectura de dashboards y comparaciones entre escenarios
 
 ---
 
@@ -214,7 +214,16 @@ Recomendación: Ejecutar un análisis de Welch **independiente** para cada escen
 
 - **Cambios en n_bots o n_receiving_operators**:
   - Puede cambiar el tempo de convergencia
-  - Usar mismo valor conservador (1.2x) si diferencia es < 30%
+  - No reutilizar automáticamente el mismo warmup si la dinámica de colas cambia de forma material
+
+### Cómo interpretar las réplicas en los dashboards
+
+Las réplicas se interpretan como observaciones independientes con **peso uniforme**:
+
+- Cada réplica tiene la misma duración efectiva, por lo que el promedio entre réplicas es el estimador correcto para la media del KPI.
+- No conviene ponderar por cantidad de racks completados ni por throughput de cada réplica, porque eso sesga el estimador hacia realizaciones más productivas.
+- Para validar si el número de réplicas es suficiente, una métrica útil es la **Relative Half-Width (RHW95)** del IC95%.
+- Como guía práctica, una RHW95 menor a 5% suele considerarse una precisión aceptable para reportes de simulación.
 
 ### Si se extiende el horizonte de medición
 

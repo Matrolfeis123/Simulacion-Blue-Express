@@ -144,6 +144,7 @@ def aggregate_welch_throughput(
     - throughput_smooth: media movil suavizada
     """
     df = pd.DataFrame(window_records)
+    n_replications = int(df["replica"].nunique()) if not df.empty else 0
 
     # Agrupar por ventana (promediar entre replicas)
     agg = df.groupby("window_idx").agg({
@@ -153,6 +154,14 @@ def aggregate_welch_throughput(
     }).reset_index(drop=True)
 
     agg.columns = ["window_time_s", "throughput_mean", "throughput_std", "n_os_total"]
+
+    if n_replications > 0:
+        t_table = {2: 12.71, 3: 4.30, 4: 3.18, 5: 2.78, 6: 2.57,
+                   7: 2.45, 8: 2.36, 9: 2.31, 10: 2.26}
+        t_crit = t_table.get(n_replications, 1.96)
+        agg["throughput_ci95"] = agg["throughput_std"] * t_crit / (n_replications ** 0.5)
+    else:
+        agg["throughput_ci95"] = np.nan
 
     # Media movil para suavizar
     agg["throughput_smooth"] = (
@@ -166,6 +175,7 @@ def detect_convergence_point(
     agg: pd.DataFrame,
     target_throughput: float,
     tolerance_frac: float = 0.10,
+    sustain_windows: int = 3,
 ) -> tuple[float, dict]:
     """
     Detectar el punto de convergencia donde throughput se estabiliza.
@@ -188,15 +198,17 @@ def detect_convergence_point(
     target_band_hi = target_throughput * (1 + tolerance_frac)
 
     convergence_idx = None
-    for i, val in enumerate(smooth):
-        if target_band_lo <= val <= target_band_hi:
+    smooth_values = smooth.reset_index(drop=True)
+    for i in range(0, len(smooth_values) - sustain_windows + 1):
+        window = smooth_values.iloc[i:i + sustain_windows]
+        if ((window >= target_band_lo) & (window <= target_band_hi)).all():
             convergence_idx = i
             break
 
     if convergence_idx is None:
         # Si nunca entra, usar punto donde esta mas cercano
-        errors = (smooth - target_throughput).abs()
-        convergence_idx = errors.idxmin()
+        errors = (smooth_values - target_throughput).abs()
+        convergence_idx = int(errors.idxmin())
         reason = "no convergence to target band; closest point selected"
     else:
         reason = "convergence detected"
@@ -204,8 +216,8 @@ def detect_convergence_point(
     convergence_time = agg.iloc[convergence_idx]["window_time_s"]
 
     # Verificar estabilidad post-convergencia
-    if convergence_idx < len(smooth) - 2:
-        post_vals = smooth.iloc[convergence_idx:].values
+    if convergence_idx < len(smooth_values) - 2:
+        post_vals = smooth_values.iloc[convergence_idx:].values
         post_fluctuation = (post_vals.std() / target_throughput) if target_throughput > 0 else 0.0
     else:
         post_fluctuation = 0.0
@@ -254,17 +266,17 @@ def visualize_welch_analysis(
     agg_sorted = agg.sort_values("window_time_s")
     time_min = agg_sorted["window_time_s"] / 60
     mean_throughput = agg_sorted["throughput_mean"]
-    std_throughput = agg_sorted["throughput_std"]
+    ci_throughput = agg_sorted["throughput_ci95"]
 
     ax.plot(time_min, mean_throughput, "o-", color="steelblue", linewidth=2.5,
             markersize=5, label="Promedio (entre replicas)", zorder=3)
     ax.fill_between(
         time_min,
-        mean_throughput - 1.96 * std_throughput,
-        mean_throughput + 1.96 * std_throughput,
+        mean_throughput - ci_throughput,
+        mean_throughput + ci_throughput,
         alpha=0.25,
         color="steelblue",
-        label="IC 95%",
+        label="IC 95% de la media",
     )
 
     # 3. Plotear media movil suavizada

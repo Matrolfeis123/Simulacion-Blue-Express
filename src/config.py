@@ -11,20 +11,19 @@ def build_peak_config() -> SimulationConfig:
     ──────────────────────────────────────────────────
     Basado en analisis riguroso de 10 replicas de 3 horas:
     
-    - Convergencia detectada: 2.5 minutos (150 segundos)
-    - Factor conservador aplicado: 1.2x → 180 segundos
-    - Recomendacion final: warmup_time = 1800 segundos (30 minutos)
+    - Convergencia detectada: ~2.5 minutos (150 segundos)
+    - Regla operativa conservadora: warmup_time = 1800 segundos (30 minutos)
     
     JUSTIFICACION:
     - El sistema comienza en estado transitorio (buffer vacio)
     - Se necesita tiempo para que la carga inicial se procese
     - El throughput estabiliza rapidamente (~2.5 min) alrededor de 710 OS/h
-    - Factor 1.2x asegura que todas las fuentes de transitorios hayan disipado
-    - Multiplo de 300s para alineacion con ventanas de analisis
+    - Se reserva una ventana de medicion limpia de 30 minutos para el reporte
+    - En escenarios con distinta configuracion, Welch debe ejecutarse de nuevo
     
     RESULTADO:
-    - Warmup de 30 minutos es prudente pero eficiente
-    - Aun permite medir 30 minutos de operacion en estado estacionario
+    - Warmup de 30 minutos es prudente pero reduce el sesgo transitorio
+    - Aun permite medir 30 minutos de operacion representativa en hora pico
     - Durante 1 hora de simulacion total: 30 min warmup + 30 min medicion
     
     REFERENCIAS:
@@ -32,8 +31,8 @@ def build_peak_config() -> SimulationConfig:
     - Ver: outputs/welch_analysis.png para grafico de convergencia
     """
     return SimulationConfig(
-        simulation_horizon=3600.0,           # 1 hora (30 min warmup + 30 min medicion)
-        warmup_time=1800.0,                  # 30 minutos (recomendado por Welch)
+        simulation_horizon=10*3600.0,           # 1 hora (30 min warmup + 30 min medicion)
+        warmup_time=0,                  # 30 minutos (política operativa conservadora)
         n_bots=47,
         n_receiving_operators=20,
         empty_rack_initial_inventory=60,

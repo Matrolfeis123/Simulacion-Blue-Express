@@ -401,6 +401,10 @@ def _plot_kpi_replicas(ax, summaries, key, title, ylabel,
     ax.set_xticks(x)
     ax.set_xticklabels([f"R{i}" for i in x], fontsize=7)
     _style_ax(ax, title, xlabel="Réplica", ylabel=ylabel)
+    ax.text(0.98, 0.95,
+            "Cada punto = una réplica\nMedia e IC95% con peso uniforme",
+            transform=ax.transAxes, ha="right", va="top", fontsize=7,
+            color=_NEU)
     ax.legend(fontsize=7, frameon=False, loc="upper left")
 
 
@@ -411,19 +415,27 @@ def _plot_throughput_convergence(ax, summaries, analytic_value=None):
     if n == 0:
         _no_data(ax); return
 
-    running_mean = [sum(values[:i+1]) / (i+1) for i in range(n)]
-    running_std  = [
-        (sum((v - running_mean[i]) ** 2 for v in values[:i+1]) / max(i, 1)) ** 0.5
-        for i in range(n)
-    ]
+    running_mean = [sum(values[:i + 1]) / (i + 1) for i in range(n)]
+    t_table = {2: 12.71, 3: 4.30, 4: 3.18, 5: 2.78, 6: 2.57,
+               7: 2.45, 8: 2.36, 9: 2.31, 10: 2.26}
+    running_ci95 = []
+    for i in range(n):
+        k = i + 1
+        if k < 2:
+            running_ci95.append(0.0)
+            continue
+        mean_k = running_mean[i]
+        std_k = (sum((v - mean_k) ** 2 for v in values[:k]) / (k - 1)) ** 0.5
+        tcrit = t_table.get(k, 1.96)
+        running_ci95.append(tcrit * std_k / (k ** 0.5))
 
     xs = list(range(1, n + 1))
     ax.plot(xs, running_mean, color=_SIM, linewidth=1.8,
             marker="o", markersize=5, label="Media acumulada", zorder=4)
     ax.fill_between(xs,
-                    [running_mean[i] - running_std[i] for i in range(n)],
-                    [running_mean[i] + running_std[i] for i in range(n)],
-                    color=_SIM, alpha=0.12, label="±1 std acumulado", zorder=2)
+                    [running_mean[i] - running_ci95[i] for i in range(n)],
+                    [running_mean[i] + running_ci95[i] for i in range(n)],
+                    color=_SIM, alpha=0.12, label="IC95% de la media acumulada", zorder=2)
 
     if analytic_value is not None:
         ax.axhline(analytic_value, color=_ANA, linewidth=1.3, linestyle="--",
@@ -432,6 +444,11 @@ def _plot_throughput_convergence(ax, summaries, analytic_value=None):
     _style_ax(ax, "Convergencia — media acumulada de throughput",
               xlabel="N réplicas", ylabel="OS / hora")
     ax.set_xticks(xs)
+    if n >= 2:
+        final_rhw = (running_ci95[-1] / abs(running_mean[-1]) * 100.0) if abs(running_mean[-1]) > 1e-12 else np.nan
+        if pd.notna(final_rhw):
+            ax.text(0.98, 0.05, f"RHW95 final: {final_rhw:.1f}%",
+                    transform=ax.transAxes, ha="right", va="bottom", fontsize=8, color=_NEU)
     ax.legend(fontsize=7, frameon=False)
     ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:,.0f}"))
 
@@ -460,12 +477,16 @@ def _plot_summary_table(ax, agg, analytical_targets):
         ci = agg.get(f"{key}_ci95", 0.0)
         lo = agg.get(f"{key}_lo", m)
         hi = agg.get(f"{key}_hi", m)
+        rhw = agg.get(f"{key}_rhw95", float("nan"))
 
         if is_pct:
             val_str = f"{m*100:.1f}% ± {ci*100:.1f}pp"
         else:
             unit = "s" if ("time" in key or "delay" in key) else " OS/h"
             val_str = f"{m:.1f}{unit} ± {ci:.1f}"
+
+        if pd.notna(rhw):
+            val_str += f"  [RHW95 {rhw:.1f}%]"
 
         if tkey and tkey in analytical_targets:
             tval   = analytical_targets[tkey]
@@ -477,6 +498,14 @@ def _plot_summary_table(ax, agg, analytical_targets):
             vs = ""
 
         lines.append(f"  {label:<20} {val_str}{vs}")
+
+    lines.extend([
+        "",
+        "Guía de precisión (RHW95):",
+        "  <= 5%  buena precisión",
+        "  5-10%  precisión moderada",
+        "  > 10%  conviene más réplicas",
+    ])
 
     ax.text(0.05, 0.95, "\n".join(lines),
             transform=ax.transAxes, va="top", ha="left", fontsize=9,
@@ -496,7 +525,7 @@ def build_replications_dashboard(
     Dashboard de 6 paneles para análisis de réplicas.
 
     [0,0] Throughput por réplica + IC95%   [0,1] Cycle time p50 por réplica
-    [1,0] Bot utilización por réplica      [1,1] Bot idle por réplica
+    [1,0] Bot utilización por réplica      [1,1] Queue delay por réplica
     [2,0] Convergencia media throughput    [2,1] Tabla resumen estadístico
     """
     N = agg.get("n_replications", len(summaries))
@@ -523,8 +552,8 @@ def build_replications_dashboard(
                        "bot_utilization", "Bot utilización por réplica",
                        "%", analytic_value=bu_target, is_pct=True)
     _plot_kpi_replicas(axes[1, 1], summaries,
-                       "bot_util_idle_frac", "Bot idle por réplica",
-                       "%", analytic_value=None, is_pct=True)
+                       "mean_exit_queue_delay_s", "Queue delay media por réplica",
+                       "Segundos", analytic_value=analytical_targets.get("mean_queue_delay_s"))
     _plot_throughput_convergence(axes[2, 0], summaries, analytic_value=tp_target)
     _plot_summary_table(axes[2, 1], agg, analytical_targets)
 

@@ -301,19 +301,21 @@ def aggregate_replications(summaries: list[dict]) -> dict:
 
     IC95% = mean ± t(0.025, N-1) × std / √N
 
-    t critico: usa scipy si esta disponible, si no usa aproximacion normal (z=1.96).
-    Para N ≥ 10 la diferencia es < 0.15 puntos.
+    t critico: usa una tabla interna; para N ≥ 10 la diferencia con la t exacta es
+    suficientemente pequeña para el uso operativo del dashboard.
+
+    Interpretacion estadistica:
+    - Cada réplica pesa igual porque todas corren con el mismo horizonte y warmup.
+    - No se pondera por cantidad de racks/OS: eso sesga el estimador hacia réplicas
+      con mayor volumen aleatorio y rompe la interpretación de réplica como unidad
+      experimental.
+    - Si se comparan escenarios con distinta duración, deben agregarse por separado.
     """
-    try:
-        from scipy.stats import t as t_dist
-        def t_crit(n: int) -> float:
-            return float(t_dist.ppf(0.975, df=n - 1))
-    except ImportError:
-        def t_crit(n: int) -> float:
-            # Aproximacion t → z para N grande; conservador para N pequeno
-            table = {2: 12.71, 3: 4.30, 4: 3.18, 5: 2.78, 6: 2.57,
-                     7: 2.45, 8: 2.36, 9: 2.31, 10: 2.26}
-            return table.get(n, 1.96)
+    def t_crit(n: int) -> float:
+        # Aproximacion t → z para N grande; conservador para N pequeno.
+        table = {2: 12.71, 3: 4.30, 4: 3.18, 5: 2.78, 6: 2.57,
+                 7: 2.45, 8: 2.36, 9: 2.31, 10: 2.26}
+        return table.get(n, 1.96)
 
     df = pd.DataFrame(summaries)
     N  = len(df)
@@ -331,6 +333,7 @@ def aggregate_replications(summaries: list[dict]) -> dict:
         agg[f"{col}_ci95"] = ci
         agg[f"{col}_lo"]   = m - ci
         agg[f"{col}_hi"]   = m + ci
+        agg[f"{col}_rhw95"] = (ci / abs(m) * 100.0) if abs(m) > 1e-12 else float("nan")
 
     return agg
 
@@ -423,7 +426,7 @@ def main():
             df.to_csv(f"outputs/{name}.csv", index=False)
 
     # -- Multiples replicas -------------------------------------------------
-    N_REPLICATIONS = 10   # ← ajustar segun tiempo disponible
+    N_REPLICATIONS = 15*2   # ← ajustar segun tiempo disponible
 
     # Resetear RNG del input_model al seed base antes de las replicas
     input_model.rng = _random.Random(config.random_seed)
