@@ -77,13 +77,15 @@ class WarehouseSimulation:
     def os_arrival_process(self):
         """
         Genera OS con proceso de Poisson agregado.
-        Corre durante todo el horizonte total (warmup + medición).
+        Corre hasta arrival_cutoff (durante warmup + medición).
         """
-        while self.env.now < self.config.simulation_horizon:
+        arrival_cutoff = self.config.arrival_cutoff
+
+        while self.env.now < arrival_cutoff:
             interarrival = self.input_model.sample_interarrival_time(self.env.now)
             yield self.env.timeout(interarrival)
 
-            if self.env.now >= self.config.simulation_horizon:
+            if self.env.now >= arrival_cutoff:
                 break
 
             self.os_counter += 1
@@ -345,6 +347,7 @@ class WarehouseSimulation:
             os_buffer=self.os_buffer,
             current_time=self.env.now,
             rack_id=rack_id,
+            config=self.config,
         )
 
         if rack is None:

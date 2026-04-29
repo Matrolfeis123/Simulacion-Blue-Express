@@ -55,16 +55,19 @@ class SimulationConfig:
     Relacion entre tiempos
     ----------------------
     simulation_horizon : tiempo TOTAL que corre la simulacion (segundos).
+                         Incluye warmup + ventana de medicion + cooldown.
     warmup_time        : periodo inicial excluido de KPIs (segundos).
                          Debe ser estrictamente menor que simulation_horizon.
+    cooldown_time_s    : tiempo final sin nuevas llegadas para drenar WIP.
 
-    Ventana de medicion efectiva = simulation_horizon - warmup_time
+    Ventana de medicion efectiva = (simulation_horizon - cooldown_time_s) - warmup_time
 
     Ejemplos
     --------
     Sin warmup:        horizon=3600, warmup=0    -> mide 3600 s
     Warmup 10 min:     horizon=3600, warmup=600  -> mide 3000 s
     Warmup 1h + 1h:    horizon=7200, warmup=3600 -> mide 3600 s
+    Warmup+cooldown:   horizon=4200, warmup=0, cooldown=600 -> mide 3600 s
     """
     simulation_horizon: float
     warmup_time: float
@@ -80,6 +83,11 @@ class SimulationConfig:
     exit_queue_capacity: Optional[int] = None
     ready_rack_buffer_capacity: Optional[int] = None
     consolidation_check_interval_s: float = 0.5
+    cooldown_time_s: float = 0.0
+    consolidation_threshold_rm: int = 3
+    consolidation_threshold_big: int = 2
+    consolidation_timeout_rm_s: float = 45.0
+    consolidation_timeout_big_s: float = 60.0
 
     def __post_init__(self) -> None:
         if self.warmup_time < 0:
@@ -90,8 +98,25 @@ class SimulationConfig:
                 f"simulation_horizon ({self.simulation_horizon}s). "
                 f"Ventana de medicion efectiva seria <= 0."
             )
+        if self.cooldown_time_s < 0:
+            raise ValueError("cooldown_time_s no puede ser negativo.")
+        if self.cooldown_time_s > self.simulation_horizon:
+            raise ValueError(
+                f"cooldown_time_s ({self.cooldown_time_s}s) no puede ser mayor que "
+                f"simulation_horizon ({self.simulation_horizon}s)."
+            )
+        if self.warmup_time >= self.arrival_cutoff:
+            raise ValueError(
+                f"warmup_time ({self.warmup_time}s) debe ser menor que arrival_cutoff "
+                f"({self.arrival_cutoff}s = simulation_horizon - cooldown_time_s)."
+            )
+
+    @property
+    def arrival_cutoff(self) -> float:
+        """Tiempo limite para nuevas llegadas (segundos)."""
+        return self.simulation_horizon - self.cooldown_time_s
 
     @property
     def effective_horizon(self) -> float:
-        """Duracion de la ventana de medicion (segundos)."""
-        return self.simulation_horizon - self.warmup_time
+        """Duracion de la ventana de medicion (segundos), excluyendo cooldown."""
+        return self.arrival_cutoff - self.warmup_time

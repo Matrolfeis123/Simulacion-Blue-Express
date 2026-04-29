@@ -117,7 +117,7 @@ def _filter_by_warmup(
         return dfs
 
     time_field = {
-        "completed_racks":     "pickup_time",
+        "completed_racks":     "time",
         "os_arrivals":         "time",
         "rack_creations":      "time",
         "reception_events":    "time",
@@ -141,40 +141,82 @@ def summarize_results(
     dfs: dict[str, pd.DataFrame],
     config: SimulationConfig,
 ) -> dict:
-    warmup   = config.warmup_time
-    horizon  = config.simulation_horizon
+    warmup = config.warmup_time
+    horizon = config.simulation_horizon
+    arrival_cutoff = config.arrival_cutoff
     eff_time = config.effective_horizon
-    eff_h    = eff_time / 3600.0
+    eff_h = eff_time / 3600.0
 
     mdfs = _filter_by_warmup(dfs, config)
+    completed_df = dfs.get("completed_racks", pd.DataFrame())
+    arrivals_df = dfs.get("os_arrivals", pd.DataFrame())
+
+    if not completed_df.empty and "time" in completed_df.columns:
+        completed_window = completed_df[
+            (completed_df["time"] >= warmup) & (completed_df["time"] < horizon)
+        ].copy()
+        
+        cooldown_completed = completed_df[
+            (completed_df["time"] >= arrival_cutoff) & (completed_df["time"] < horizon)
+        ].copy()
+    else:
+        completed_window = pd.DataFrame()
+        cooldown_completed = pd.DataFrame()
+
+    if not arrivals_df.empty and "time" in arrivals_df.columns:
+        arrivals_window = arrivals_df[
+            (arrivals_df["time"] >= warmup) & (arrivals_df["time"] < arrival_cutoff)
+        ].copy()
+    else:
+        arrivals_window = pd.DataFrame()
+
     summary: dict = {
-        "warmup_time_s":       warmup,
+        "warmup_time_s": warmup,
+        "arrival_cutoff_s": arrival_cutoff,
+        "cooldown_time_s": config.cooldown_time_s,
         "effective_horizon_s": eff_time,
     }
 
-    # -- Racks completados --------------------------------------------------
+    # -- Throughput y balance arrivals/departures --------------------------
+    # Incluye completaciones en cooldown: son trabajo que ingreso dentro de la ventana de llegadas.
+    total_racks = len(completed_window) if not completed_window.empty else 0
+    total_os = int(completed_window["n_os"].sum()) if not completed_window.empty else 0
+    arrivals_in_window = len(arrivals_window)
+    cooldown_completions_os = (
+        int(cooldown_completed["n_os"].sum()) if not cooldown_completed.empty else 0
+    )
+
+    throughput_os_per_hour = total_os / eff_h
+    throughput_racks_per_hour = total_racks / eff_h
+    arrival_rate_os_per_hour = arrivals_in_window / eff_h
+
+    summary.update({
+        "total_completed_racks": total_racks,
+        "total_completed_os": total_os,
+        "throughput_os_per_hour": throughput_os_per_hour,
+        "throughput_racks_per_hour": throughput_racks_per_hour,
+        "arrival_rate_os_per_hour": arrival_rate_os_per_hour,
+        "departure_rate_os_per_hour": throughput_os_per_hour,
+        "arrival_departure_gap_os_per_hour": arrival_rate_os_per_hour - throughput_os_per_hour,
+        "wip_end_os": arrivals_in_window - total_os,
+        "cooldown_completions_os": cooldown_completions_os,
+    })
+
+    # -- Racks completados (KPIs de ciclo) ---------------------------------
     completed = mdfs["completed_racks"]
     if not completed.empty:
-        total_racks = len(completed)
-        total_os    = int(completed["n_os"].sum())
         summary.update({
-            "total_completed_racks":     total_racks,
-            "total_completed_os":        total_os,
-            "throughput_os_per_hour":    total_os / eff_h,
-            "throughput_racks_per_hour": total_racks / eff_h,
-            "mean_cycle_time_s":         float(completed["cycle_time_total"].mean()),
-            "p50_cycle_time_s":          float(completed["cycle_time_total"].quantile(0.50)),
-            "p90_cycle_time_s":          float(completed["cycle_time_total"].quantile(0.90)),
-            "p95_cycle_time_s":          float(completed["cycle_time_total"].quantile(0.95)),
-            "mean_n_stops":              float(completed["n_stops"].mean()),
-            "mean_travel_time_s":        float(completed["travel_time_total"].mean()),
-            "mean_queue_time_trip_s":    float(completed["queue_time_total"].mean()),
-            "mean_release_time_trip_s":  float(completed["release_time_total"].mean()),
+            "mean_cycle_time_s": float(completed["cycle_time_total"].mean()),
+            "p50_cycle_time_s": float(completed["cycle_time_total"].quantile(0.50)),
+            "p90_cycle_time_s": float(completed["cycle_time_total"].quantile(0.90)),
+            "p95_cycle_time_s": float(completed["cycle_time_total"].quantile(0.95)),
+            "mean_n_stops": float(completed["n_stops"].mean()),
+            "mean_travel_time_s": float(completed["travel_time_total"].mean()),
+            "mean_queue_time_trip_s": float(completed["queue_time_total"].mean()),
+            "mean_release_time_trip_s": float(completed["release_time_total"].mean()),
         })
     else:
         summary.update({
-            "total_completed_racks": 0, "total_completed_os": 0,
-            "throughput_os_per_hour": 0.0, "throughput_racks_per_hour": 0.0,
             "mean_cycle_time_s": 0.0, "p50_cycle_time_s": 0.0,
             "p90_cycle_time_s": 0.0, "p95_cycle_time_s": 0.0,
             "mean_n_stops": 0.0, "mean_travel_time_s": 0.0,
@@ -426,7 +468,7 @@ def main():
             df.to_csv(f"outputs/{name}.csv", index=False)
 
     # -- Multiples replicas -------------------------------------------------
-    N_REPLICATIONS = 15*2   # ← ajustar segun tiempo disponible
+    N_REPLICATIONS = 30   # ← ajustar segun tiempo disponible
 
     # Resetear RNG del input_model al seed base antes de las replicas
     input_model.rng = _random.Random(config.random_seed)

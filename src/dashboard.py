@@ -58,7 +58,7 @@ def _plot_throughput(ax, completed, warmup, horizon, targets):
     times = np.arange(warmup + window_s, horizon + 1, 60.0)
     rolling = [
         completed.loc[
-            (completed["pickup_time"] >= t - window_s) & (completed["pickup_time"] < t),
+            (completed["time"] >= t - window_s) & (completed["time"] < t),
             "n_os"
         ].sum() / (window_s / 3600.0)
         for t in times
@@ -320,7 +320,7 @@ def build_dashboard(
 
     # Filtro de warmup
     if not completed.empty and warmup > 0:
-        completed = completed[completed["pickup_time"] >= warmup].copy()
+        completed = completed[completed["time"] >= warmup].copy()
     if not queue_ev.empty and warmup > 0:
         queue_ev = queue_ev[queue_ev["time"] >= warmup].copy()
     if not reception_ev.empty and warmup > 0:

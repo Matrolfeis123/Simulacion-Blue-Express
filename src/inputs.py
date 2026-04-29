@@ -174,30 +174,42 @@ class InputModel:
         os_buffer: List[OS],
         current_time: float,
         rack_id: str,
+        config: SimulationConfig | None = None,
     ) -> RackMission | None:
         """
-        V1 simple y trazable:
+        Consolidación con política threshold + timeout:
         - prioriza OS por grupo de segmento
-        - agrupa por capacidad teórica
-        - no optimiza finamente combinaciones
+        - Regular/Medium: threshold o timeout
+        - Big: threshold o timeout
+        - SuperBig: despacho inmediato de 1 OS
         - mantiene secuencia de exits ordenada ascendente
         """
         if not os_buffer:
             return None
 
+        active_config = config or self.config
+
         # 1) intentar formar rack de Regular/Medium
         rm_candidates = [o for o in os_buffer if o.segment in {"Regular", "Medium"}]
-        if len(rm_candidates) >= 1:
-            chosen = rm_candidates[: min(5, len(rm_candidates))]
-            if chosen:
-                return self._build_rack(chosen, os_buffer, current_time, rack_id)
+        if rm_candidates and self._should_build_rack(
+            candidates=rm_candidates,
+            threshold=active_config.consolidation_threshold_rm,
+            timeout_s=active_config.consolidation_timeout_rm_s,
+            current_time=current_time,
+        ):
+            chosen = rm_candidates[: min(self.get_trip_building_capacity("Regular"), len(rm_candidates))]
+            return self._build_rack(chosen, os_buffer, current_time, rack_id)
 
         # 2) intentar rack de Big
         big_candidates = [o for o in os_buffer if o.segment == "Big"]
-        if len(big_candidates) >= 1:
-            chosen = big_candidates[: min(2, len(big_candidates))]
-            if chosen:
-                return self._build_rack(chosen, os_buffer, current_time, rack_id)
+        if big_candidates and self._should_build_rack(
+            candidates=big_candidates,
+            threshold=active_config.consolidation_threshold_big,
+            timeout_s=active_config.consolidation_timeout_big_s,
+            current_time=current_time,
+        ):
+            chosen = big_candidates[: min(self.get_trip_building_capacity("Big"), len(big_candidates))]
+            return self._build_rack(chosen, os_buffer, current_time, rack_id)
 
         # 3) SuperBig individual
         super_candidates = [o for o in os_buffer if o.segment == "SuperBig"]
@@ -206,6 +218,18 @@ class InputModel:
             return self._build_rack(chosen, os_buffer, current_time, rack_id)
 
         return None
+
+    def _should_build_rack(
+        self,
+        candidates: List[OS],
+        threshold: int,
+        timeout_s: float,
+        current_time: float,
+    ) -> bool:
+        if len(candidates) >= threshold:
+            return True
+        oldest_arrival_time = min(o.arrival_time for o in candidates)
+        return (current_time - oldest_arrival_time) >= timeout_s
 
     def _build_rack(
         self,
