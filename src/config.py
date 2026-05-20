@@ -34,8 +34,8 @@ def build_peak_config() -> SimulationConfig:
         simulation_horizon=13200.0,        # 1800 + 10800 + 600 = 13200 segundos total
         warmup_time=1800.0,                # 30 minutos (ya recomendado por Welch)
         cooldown_time_s=600.0,             # 10 minutos para drenar WIP
-        n_bots=47,
-        n_receiving_operators=7,
+        n_bots=40,
+        n_receiving_operators=20,
         empty_rack_initial_inventory=60,
         random_seed=42,
         effective_speed_mps=0.9,

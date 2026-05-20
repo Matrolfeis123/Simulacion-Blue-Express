@@ -48,14 +48,14 @@ def _no_data(ax):
 
 
 # ── Panel 1: Throughput ────────────────────────────────────────────────────────
-def _plot_throughput(ax, completed, warmup, horizon, targets):
+def _plot_throughput(ax, completed, warmup, arrival_cutoff, effective_horizon, targets):
     _style_ax(ax, "Throughput — OS completadas / hora",
               xlabel="Tiempo (s)", ylabel="OS / hora")
     if completed.empty:
         _no_data(ax); return
 
     window_s = 600.0
-    times = np.arange(warmup + window_s, horizon + 1, 60.0)
+    times = np.arange(warmup + window_s, arrival_cutoff + 1, 60.0)  # ← hasta arrival_cutoff
     rolling = [
         completed.loc[
             (completed["time"] >= t - window_s) & (completed["time"] < t),
@@ -64,9 +64,11 @@ def _plot_throughput(ax, completed, warmup, horizon, targets):
         for t in times
     ]
     ax.plot(times, rolling, color=_SIM, linewidth=1.5,
-            label="Simulación (ventana 10 min)", zorder=3)
+            label= f"Rolling {window_s:.0f}s", zorder=3)
 
-    avg_sim = completed["n_os"].sum() / ((horizon - warmup) / 3600.0)
+    # Promedio solo de completaciones en ventana de medición
+    completed_in_window = completed[completed["time"] < arrival_cutoff]
+    avg_sim = completed_in_window["n_os"].sum() / (effective_horizon / 3600.0)  # ← denominador correcto
     ax.axhline(avg_sim, color=_SIM, linestyle=":", linewidth=1.1,
                label=f"Promedio sim: {avg_sim:,.0f} OS/h", zorder=4)
 
@@ -80,8 +82,14 @@ def _plot_throughput(ax, completed, warmup, horizon, targets):
                 color=_ANA if gap < 0 else _SIM)
 
     ax.legend(fontsize=7, frameon=False, loc="upper left")
-    ax.set_xlim(warmup, horizon)
+    ax.set_xlim(warmup, arrival_cutoff)  # ← hasta arrival_cutoff
+    
+    # Marcar visualmente el inicio del cooldown (opcional pero recomendado)
+    ax.axvline(arrival_cutoff, color=_NEU, linestyle="--", linewidth=0.8, 
+               alpha=0.6, label="Fin medición", zorder=1)
+    
     ax.yaxis.set_major_formatter(mticker.FuncFormatter(lambda x, _: f"{x:,.0f}"))
+
 
 
 # ── Panel 2: Cycle time ────────────────────────────────────────────────────────
@@ -102,13 +110,19 @@ def _plot_cycle_time(ax, completed, targets):
 
 
 # ── Panel 3: Bot utilización ───────────────────────────────────────────────────
-def _plot_bot_utilization(ax, audit, config, warmup, horizon, targets):
-    effective = horizon - warmup
+def _plot_bot_utilization(ax, audit, config, warmup, arrival_cutoff, targets):
+    # Usar effective_horizon (sin cooldown) para coherencia con summary
+    effective = config.effective_horizon  # ← CAMBIO AQUÍ
     total_bot_time = config.n_bots * effective
 
     trips = pd.DataFrame()
     if not audit.empty:
-        trips = audit[(audit["event_type"] == "trip_completed") & (audit["time"] >= warmup)]
+        # Filtrar trips completados en ventana de medición (sin cooldown)
+        trips = audit[
+            (audit["event_type"] == "trip_completed") & 
+            (audit["time"] >= warmup) & 
+            (audit["time"] < arrival_cutoff)  # ← CAMBIO AQUÍ
+        ]
 
     if trips.empty:
         _style_ax(ax, "Utilización de bots (agregada)")
@@ -174,12 +188,13 @@ def _plot_queue_by_exit(ax, queue_ev, targets):
 
 
 # ── Panel 5: Buffers ───────────────────────────────────────────────────────────
-def _plot_buffers(ax, snapshots, warmup):
+def _plot_buffers(ax, snapshots, warmup, arrival_cutoff):
     _style_ax(ax, "Niveles de buffer en el tiempo", xlabel="Tiempo (s)", ylabel="Cantidad")
     if snapshots.empty:
         _no_data(ax); return
 
-    s = snapshots[snapshots["time"] >= warmup]
+    # Filtrar por ventana de medición (sin cooldown)
+    s = snapshots[(snapshots["time"] >= warmup) & (snapshots["time"] < arrival_cutoff)]
     if s.empty:
         _no_data(ax); return
 
@@ -190,7 +205,9 @@ def _plot_buffers(ax, snapshots, warmup):
             linestyle="--", label="Racks vacíos")
     ax.legend(fontsize=7, frameon=False, ncol=2)
     ax.set_xlim(s["time"].min(), s["time"].max())
-
+    
+    # Opcional: marcar visualmente el fin de medición
+    ax.axvline(arrival_cutoff, color=_NEU, linestyle="--", linewidth=0.8, alpha=0.5, zorder=1)
 
 # ── Panel 6: Distribución de stops ────────────────────────────────────────────
 def _plot_stops_distribution(ax, completed):
@@ -210,7 +227,8 @@ def _plot_stops_distribution(ax, completed):
 
 
 # ── Panel 7a: Utilización de operadores ───────────────────────────────────────
-def _plot_reception_utilization(ax, reception_ev, config, warmup):
+def _plot_reception_utilization(ax, reception_ev, config, warmup, arrival_cutoff):
+
     """Barra de utilización de operadores vs referencia de saturación."""
     _style_ax(ax, "Recepción — utilización de operadores",
               xlabel="", ylabel="Utilización (%)")
@@ -226,6 +244,10 @@ def _plot_reception_utilization(ax, reception_ev, config, warmup):
         ends[["rack_id",   "time"]].rename(columns={"time": "t_end"}),
         on="rack_id",
     )
+    
+    # Filtrar preparaciones que terminaron ANTES del cooldown
+    prep_pairs = prep_pairs[prep_pairs["t_end"] < arrival_cutoff]  # ← CAMBIO AQUÍ
+    
     total_prep_active = float((prep_pairs["t_end"] - prep_pairs["t_start"]).sum())
     total_op_time     = config.n_receiving_operators * config.effective_horizon
     util_pct          = total_prep_active / total_op_time * 100.0 if total_op_time > 0 else 0.0
@@ -310,6 +332,8 @@ def build_dashboard(
     """
     warmup  = config.warmup_time
     horizon = config.simulation_horizon
+    arrival_cutoff = config.arrival_cutoff  # ← AGREGAR
+    effective_horizon = config.effective_horizon  # ← AGREGAR
 
     completed      = dfs.get("completed_racks",    pd.DataFrame())
     snapshots      = dfs.get("state_snapshots",     pd.DataFrame())
@@ -318,15 +342,35 @@ def build_dashboard(
     reception_ev   = dfs.get("reception_events",    pd.DataFrame())
     rack_creations = dfs.get("rack_creations",      pd.DataFrame())
 
-    # Filtro de warmup
+
+    # ── FILTROS MEJORADOS ──
+    # Para tasas/niveles: excluir cooldown
+    if warmup > 0:
+        if not queue_ev.empty:
+            queue_ev = queue_ev[
+                (queue_ev["time"] >= warmup) & 
+                (queue_ev["time"] < arrival_cutoff)  # ← CAMBIO
+            ].copy()
+        if not reception_ev.empty:
+            reception_ev = reception_ev[
+                (reception_ev["time"] >= warmup) & 
+                (reception_ev["time"] < arrival_cutoff)  # ← CAMBIO
+            ].copy()
+        if not snapshots.empty:
+            snapshots = snapshots[
+                (snapshots["time"] >= warmup) & 
+                (snapshots["time"] < arrival_cutoff)  # ← CAMBIO
+            ].copy()
+        if not audit.empty:
+            audit = audit[audit["time"] >= warmup].copy()  # filtro fino dentro de _plot_bot_utilization
+    
+    # Para distribuciones (cycle time): incluir cooldown
     if not completed.empty and warmup > 0:
         completed = completed[completed["time"] >= warmup].copy()
-    if not queue_ev.empty and warmup > 0:
-        queue_ev = queue_ev[queue_ev["time"] >= warmup].copy()
-    if not reception_ev.empty and warmup > 0:
-        reception_ev = reception_ev[reception_ev["time"] >= warmup].copy()
     if not rack_creations.empty and warmup > 0:
         rack_creations = rack_creations[rack_creations["time"] >= warmup].copy()
+
+
 
     # Figura 4x2
     fig, axes = plt.subplots(4, 2, figsize=(14, 14))
@@ -338,14 +382,15 @@ def build_dashboard(
         fontsize=12, fontweight="bold", y=0.999,
     )
 
-    _plot_throughput(axes[0, 0], completed, warmup, horizon, analytical_targets)
-    _plot_cycle_time(axes[0, 1], completed, analytical_targets)
-    _plot_bot_utilization(axes[1, 0], audit, config, warmup, horizon, analytical_targets)
-    _plot_queue_by_exit(axes[1, 1], queue_ev, analytical_targets)
-    _plot_buffers(axes[2, 0], snapshots, warmup)
-    _plot_stops_distribution(axes[2, 1], completed)
-    _plot_reception_utilization(axes[3, 0], reception_ev, config, warmup)
-    _plot_reception_wait(axes[3, 1], reception_ev, rack_creations, warmup)
+    # ── LLAMADAS CON PARÁMETROS ACTUALIZADOS ──
+    _plot_throughput(axes[0, 0], completed, warmup, arrival_cutoff, effective_horizon, analytical_targets)
+    _plot_cycle_time(axes[0, 1], completed, analytical_targets)  # sin cambios
+    _plot_bot_utilization(axes[1, 0], audit, config, warmup, arrival_cutoff, analytical_targets)
+    _plot_queue_by_exit(axes[1, 1], queue_ev, analytical_targets)  # sin cambios
+    _plot_buffers(axes[2, 0], snapshots, warmup, arrival_cutoff)
+    _plot_stops_distribution(axes[2, 1], completed)  # sin cambios
+    _plot_reception_utilization(axes[3, 0], reception_ev, config, warmup, arrival_cutoff)
+    _plot_reception_wait(axes[3, 1], reception_ev, rack_creations, warmup)  # sin cambios
 
     plt.tight_layout(rect=[0, 0, 1, 0.997])
 

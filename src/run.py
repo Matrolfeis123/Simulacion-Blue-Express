@@ -86,7 +86,7 @@ def build_input_model_from_excel(
         ret_df["travel_distance_m"].astype(float),
     ))
 
-    rack_prep_time_by_n_os = {1: 8.0, 2: 12.0, 3: 16.0, 4: 20.0, 5: 24.0}
+    rack_prep_time_by_n_os = {1: 20.0, 2: 25.0, 3: 30.0, 4: 35.0, 5: 40.0}
     release_time_by_n_os_stop = _build_release_time_by_n_os_stop(
         config=config, max_os_per_stop=max(rack_prep_time_by_n_os),
     )
@@ -108,14 +108,48 @@ def build_input_model_from_excel(
     )
 
 
-# -- Filtro de warmup -----------------------------------------------------------
-def _filter_by_warmup(
-    dfs: dict[str, pd.DataFrame], config: SimulationConfig
-) -> dict[str, pd.DataFrame]:
-    warmup = config.warmup_time
-    if warmup <= 0.0:
-        return dfs
+# # -- Filtro de warmup -----------------------------------------------------------
+# def _filter_by_warmup(
+#     dfs: dict[str, pd.DataFrame], config: SimulationConfig
+# ) -> dict[str, pd.DataFrame]:
+#     warmup = config.warmup_time
+#     if warmup <= 0.0:
+#         return dfs
 
+#     time_field = {
+#         "completed_racks":     "time",
+#         "os_arrivals":         "time",
+#         "rack_creations":      "time",
+#         "reception_events":    "time",
+#         "exit_queue_events":   "time",
+#         "exit_service_events": "time",
+#         "travel_audit_events": "time",
+#         "state_snapshots":     "time",
+#     }
+#     filtered: dict[str, pd.DataFrame] = {}
+#     for name, df in dfs.items():
+#         field = time_field.get(name)
+#         if field and not df.empty and field in df.columns:
+#             filtered[name] = df[df[field] >= warmup].copy()
+#         else:
+#             filtered[name] = df
+#     return filtered
+
+# -- Filtro de warmup y cooldown -----------------------------------------------------------
+def _filter_window(
+    dfs: dict[str, pd.DataFrame],
+    config: SimulationConfig,
+    *,
+    include_cooldown: bool,
+) -> dict[str, pd.DataFrame]:
+    """
+    Filtro por ventana temporal.
+    - include_cooldown=False: [warmup, arrival_cutoff)  → para tasas y niveles
+    - include_cooldown=True:  [warmup, simulation_horizon) → para distribuciones de objetos
+    """
+    t_lo = config.warmup_time
+    t_hi = config.simulation_horizon if include_cooldown else config.arrival_cutoff
+    
     time_field = {
         "completed_racks":     "time",
         "os_arrivals":         "time",
@@ -126,14 +160,14 @@ def _filter_by_warmup(
         "travel_audit_events": "time",
         "state_snapshots":     "time",
     }
-    filtered: dict[str, pd.DataFrame] = {}
+    out = {}
     for name, df in dfs.items():
         field = time_field.get(name)
         if field and not df.empty and field in df.columns:
-            filtered[name] = df[df[field] >= warmup].copy()
+            out[name] = df[(df[field] >= t_lo) & (df[field] < t_hi)].copy()
         else:
-            filtered[name] = df
-    return filtered
+            out[name] = df
+    return out
 
 
 # -- Resumen de KPIs ------------------------------------------------------------
@@ -147,28 +181,45 @@ def summarize_results(
     eff_time = config.effective_horizon
     eff_h = eff_time / 3600.0
 
-    mdfs = _filter_by_warmup(dfs, config)
+    mdfs_rate  = _filter_window(dfs, config, include_cooldown=False)  # para tasas/niveles
+    mdfs_dist  = _filter_window(dfs, config, include_cooldown=True)   # para distribuciones
+    
+    
     completed_df = dfs.get("completed_racks", pd.DataFrame())
     arrivals_df = dfs.get("os_arrivals", pd.DataFrame())
+    creations_df = dfs.get("rack_creations", pd.DataFrame())
 
-    if not completed_df.empty and "time" in completed_df.columns:
-        completed_window = completed_df[
-            (completed_df["time"] >= warmup) & (completed_df["time"] < horizon)
-        ].copy()
+    # -- FILTRO POR CREATION_TIME para throughput (evita sesgo por completaciones tardias de racks creados en warmup) --
+    # Regla: Contar OS de racks que se ORIGINARON en la ventana de medicion, sin importar cuando terminan (pueden terminar en cooldown).
+
+    if not creations_df.empty and "time" in creations_df.columns:
+        # Paso 1: identificar racks creados en la ventana de medición
+        racks_created_in_window = creations_df[
+            (creations_df["time"] >= warmup) & 
+            (creations_df["time"] < arrival_cutoff)
+        ]["rack_id"].unique()
         
-        cooldown_completed = completed_df[
-            (completed_df["time"] >= arrival_cutoff) & (completed_df["time"] < horizon)
-        ].copy()
-    else:
-        completed_window = pd.DataFrame()
-        cooldown_completed = pd.DataFrame()
+        # Paso 2: de esos racks, tomar los que completaron (en cualquier momento)
+        completed_in_window = completed_df[
+            completed_df["rack_id"].isin(racks_created_in_window)
+        ]
 
-    if not arrivals_df.empty and "time" in arrivals_df.columns:
-        arrivals_window = arrivals_df[
-            (arrivals_df["time"] >= warmup) & (arrivals_df["time"] < arrival_cutoff)
-        ].copy()
+        total_racks = len(completed_in_window)
+        total_os = int(completed_in_window["n_os"].sum())
+
+        # Paso 3: Contabilizar cuantos completados en cooldown corresponden a racks creados en la ventana de medición
+        cooldown_completed = completed_in_window[
+            (completed_in_window["time"] >= arrival_cutoff) & 
+            (completed_in_window["time"] < horizon)
+        ]
+        cooldown_completions_os = int(cooldown_completed["n_os"].sum())
     else:
-        arrivals_window = pd.DataFrame()
+        total_racks = 0
+        total_os = 0
+        cooldown_completions_os = 0
+
+
+    
 
     summary: dict = {
         "warmup_time_s": warmup,
@@ -179,13 +230,13 @@ def summarize_results(
 
     # -- Throughput y balance arrivals/departures --------------------------
     # Incluye completaciones en cooldown: son trabajo que ingreso dentro de la ventana de llegadas.
-    total_racks = len(completed_window) if not completed_window.empty else 0
-    total_os = int(completed_window["n_os"].sum()) if not completed_window.empty else 0
+    # ── FILTRO SIMPLE para arrivals ──
+    
+    # Las llegadas usan mdfs_rate porque ya están correctamente filtradas
+    arrivals_window = mdfs_rate.get("os_arrivals", pd.DataFrame())
     arrivals_in_window = len(arrivals_window)
-    cooldown_completions_os = (
-        int(cooldown_completed["n_os"].sum()) if not cooldown_completed.empty else 0
-    )
 
+    # ── CÁLCULO DE TASAS ──
     throughput_os_per_hour = total_os / eff_h
     throughput_racks_per_hour = total_racks / eff_h
     arrival_rate_os_per_hour = arrivals_in_window / eff_h
@@ -203,18 +254,39 @@ def summarize_results(
     })
 
     # -- Racks completados (KPIs de ciclo) ---------------------------------
-    completed = mdfs["completed_racks"]
-    if not completed.empty:
-        summary.update({
-            "mean_cycle_time_s": float(completed["cycle_time_total"].mean()),
-            "p50_cycle_time_s": float(completed["cycle_time_total"].quantile(0.50)),
-            "p90_cycle_time_s": float(completed["cycle_time_total"].quantile(0.90)),
-            "p95_cycle_time_s": float(completed["cycle_time_total"].quantile(0.95)),
-            "mean_n_stops": float(completed["n_stops"].mean()),
-            "mean_travel_time_s": float(completed["travel_time_total"].mean()),
-            "mean_queue_time_trip_s": float(completed["queue_time_total"].mean()),
-            "mean_release_time_trip_s": float(completed["release_time_total"].mean()),
-        })
+
+    # Regla: queremos la distribución COMPLETA de cycle times de racks originados
+    # en la ventana, incluso si terminaron en cooldown (por eso NO filtramos por
+    # time de fin, sino por creation_time).
+
+    if not creations_df.empty and not completed_df.empty:
+        # Racks creados en la ventana de medición
+        racks_created_in_window = creations_df[
+            (creations_df["time"] >= warmup) & 
+            (creations_df["time"] < arrival_cutoff)
+        ]["rack_id"].unique()
+        
+        # Completados que corresponden a esos racks
+        completed = completed_df[completed_df["rack_id"].isin(racks_created_in_window)]
+        
+        if not completed.empty:
+            summary.update({
+                "mean_cycle_time_s": float(completed["cycle_time_total"].mean()),
+                "p50_cycle_time_s": float(completed["cycle_time_total"].quantile(0.50)),
+                "p90_cycle_time_s": float(completed["cycle_time_total"].quantile(0.90)),
+                "p95_cycle_time_s": float(completed["cycle_time_total"].quantile(0.95)),
+                "mean_n_stops": float(completed["n_stops"].mean()),
+                "mean_travel_time_s": float(completed["travel_time_total"].mean()),
+                "mean_queue_time_trip_s": float(completed["queue_time_total"].mean()),
+                "mean_release_time_trip_s": float(completed["release_time_total"].mean()),
+            })
+        else:
+            summary.update({
+                "mean_cycle_time_s": 0.0, "p50_cycle_time_s": 0.0,
+                "p90_cycle_time_s": 0.0, "p95_cycle_time_s": 0.0,
+                "mean_n_stops": 0.0, "mean_travel_time_s": 0.0,
+                "mean_queue_time_trip_s": 0.0, "mean_release_time_trip_s": 0.0,
+            })
     else:
         summary.update({
             "mean_cycle_time_s": 0.0, "p50_cycle_time_s": 0.0,
@@ -224,13 +296,14 @@ def summarize_results(
         })
 
     # -- Utilizacion de bots ------------------------------------------------
-    audit = mdfs["travel_audit_events"]
+    # Regla: utilización es una TASA. Usar mdfs_rate (sin cooldown).
+    audit = mdfs_rate.get("travel_audit_events", pd.DataFrame())  # ← CAMBIO AQUÍ
     trips = pd.DataFrame()
     if not audit.empty and "event_type" in audit.columns:
         trips = audit[audit["event_type"] == "trip_completed"]
 
     if not trips.empty:
-        total_bot_time = config.n_bots * eff_time
+        total_bot_time = config.n_bots * eff_time  # eff_time = effective_horizon (sin cooldown)
         t_travel  = float(trips["travel_time_total"].sum())
         t_queue   = float(trips["queue_time_total"].sum())
         t_release = float(trips["release_time_total"].sum())
@@ -250,8 +323,11 @@ def summarize_results(
             "bot_util_idle_frac": 1.0, "total_trips": 0,
         })
 
+
     # -- Colas en salidas ---------------------------------------------------
-    queue_ev = mdfs["exit_queue_events"]
+    # Regla: queue delays son eventos que ocurren durante operación normal.
+    # Usar mdfs_rate (sin cooldown) para no sesgar con las colas del drenaje.
+    queue_ev = mdfs_rate.get("exit_queue_events", pd.DataFrame())  # ← CAMBIO AQUÍ
     if not queue_ev.empty:
         summary.update({
             "mean_exit_queue_delay_s": float(queue_ev["queue_delay_s"].mean()),
@@ -265,8 +341,12 @@ def summarize_results(
             "max_exit_queue_delay_s":  0.0,
         })
 
+
+
     # -- Snapshots de buffer ------------------------------------------------
-    snaps = mdfs["state_snapshots"]
+    # Regla: niveles promedio deben excluir cooldown (cuando se vacían).
+    # Usar mdfs_rate.
+    snaps = mdfs_rate.get("state_snapshots", pd.DataFrame())  # ← CAMBIO AQUÍ
     if not snaps.empty:
         summary.update({
             "mean_os_buffer":     float(snaps["os_buffer_len"].mean()),
