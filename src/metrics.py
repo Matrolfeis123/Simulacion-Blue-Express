@@ -14,10 +14,12 @@ class MetricsCollector:
         self.rack_creations: List[Dict[str, Any]] = []
         self.reception_events: List[Dict[str, Any]] = []
         self.exit_queue_events: List[Dict[str, Any]] = []
+        self.exit_queue_length_events: List[Dict[str, Any]] = []
         self.exit_service_events: List[Dict[str, Any]] = []
         self.travel_audit_events: List[Dict[str, Any]] = []
         self.completed_racks: List[Dict[str, Any]] = []
         self.state_snapshots: List[Dict[str, Any]] = []
+        self.operator_service_events: List[Dict[str, Any]] = []
 
     def record_os_arrival(self, os_obj: OS, time: float) -> None:
         self.os_arrivals.append(
@@ -71,6 +73,26 @@ class MetricsCollector:
                 "time": time,
                 "exit_id": exit_id,
                 "queue_delay_s": queue_delay_s,
+            }
+        )
+
+    def record_exit_queue_length_change(
+        self,
+        exit_id: str,
+        time: float,
+        delta: int,
+        event: str,
+        bot_id: str,
+        rack_id: str,
+    ) -> None:
+        self.exit_queue_length_events.append(
+            {
+                "time": time,
+                "exit_id": exit_id,
+                "delta": delta,
+                "event": event,
+                "bot_id": bot_id,
+                "rack_id": rack_id,
             }
         )
 
@@ -137,8 +159,27 @@ class MetricsCollector:
             "rack_creations": pd.DataFrame(self.rack_creations),
             "reception_events": pd.DataFrame(self.reception_events),
             "exit_queue_events": pd.DataFrame(self.exit_queue_events),
+            "exit_queue_length_events": pd.DataFrame(self.exit_queue_length_events),
             "exit_service_events": pd.DataFrame(self.exit_service_events),
             "travel_audit_events": pd.DataFrame(self.travel_audit_events),
             "completed_racks": pd.DataFrame(self.completed_racks),
             "state_snapshots": pd.DataFrame(self.state_snapshots),
+            "operator_service_events": pd.DataFrame(self.operator_service_events),
         }
+    
+    def record_operator_service(self, record) -> None:
+        self.operator_service_events.append({
+            "operator_id": record.operator_id,
+            "bot_id": record.bot_id,
+            "rack_id": record.rack_id,
+            "exit_id": record.exit_id,
+            "request_time": record.request_time,
+            "arrival_time": record.arrival_time,
+            "end_time": record.end_time,
+            "walking_distance_m": record.walking_distance_m,
+            "walking_time_s": record.walking_time_s,
+            "serving_time_s": record.serving_time_s,
+            "wait_for_operator_s": record.wait_for_operator_s,
+            "n_os_stop": record.n_os_stop,
+            "time": record.end_time,
+        })

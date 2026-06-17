@@ -89,6 +89,10 @@ class SimulationConfig:
     consolidation_timeout_rm_s: float = 45.0
     consolidation_timeout_big_s: float = 60.0
 
+    n_operators_upper: int = 10          # default = 1 por exit del ala upper
+    n_operators_lower: int = 7          # default = 1 por exit del ala lower
+    operator_walking_speed_mps: float = 1.0
+
     def __post_init__(self) -> None:
         if self.warmup_time < 0:
             raise ValueError("warmup_time no puede ser negativo.")
@@ -110,6 +114,13 @@ class SimulationConfig:
                 f"warmup_time ({self.warmup_time}s) debe ser menor que arrival_cutoff "
                 f"({self.arrival_cutoff}s = simulation_horizon - cooldown_time_s)."
             )
+        
+        if self.n_operators_upper <= 0:
+            raise ValueError("n_operators_upper debe ser > 0")
+        if self.n_operators_lower <= 0:
+            raise ValueError("n_operators_lower debe ser > 0")
+        if self.operator_walking_speed_mps <= 0:
+            raise ValueError("operator_walking_speed_mps debe ser > 0")
 
     @property
     def arrival_cutoff(self) -> float:

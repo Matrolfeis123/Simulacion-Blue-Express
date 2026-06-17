@@ -9,6 +9,7 @@ import pandas as pd
 
 from config import build_peak_config
 from dashboard import build_dashboard, build_replications_dashboard
+from geometry import BoardGeometry, Geometry
 from inputs import InputModel
 from models import SimulationConfig
 from simulation import build_and_run_simulation
@@ -27,15 +28,70 @@ def _build_release_time_by_n_os_stop(
 
 
 # -- Lectura de Excel -----------------------------------------------------------
+def _load_board_geometry(excel_path: Path, wing_by_exit: dict[str, str]) -> BoardGeometry:
+    """
+    Lee la hoja 'board_geometry' (formato parameter/value) y construye un
+    BoardGeometry. La asignacion de wings se pasa aparte porque viene de
+    la hoja 'destination_to_exit'.
+    """
+    bg_df = pd.read_excel(
+        excel_path, sheet_name="board_geometry",
+        usecols=["parameter", "value"],
+    ).dropna(subset=["parameter", "value"])
+
+    params = dict(zip(
+        bg_df["parameter"].astype(str),
+        bg_df["value"].astype(float),
+    ))
+
+    def get_int(k: str) -> int:
+        return int(round(params[k]))
+
+    def get_float(k: str) -> float:
+        return float(params[k])
+
+    return BoardGeometry(
+        d_reception_to_bifurcation_m=get_float("d_reception_to_bifurcation_m"),
+        n_turns_reception_to_bifurcation=get_int("n_turns_reception_to_bifurcation"),
+        d_bifurcation_to_U_m=get_float("d_bifurcation_to_U_m"),
+        n_turns_bifurcation_to_U=get_int("n_turns_bifurcation_to_U"),
+        d_bifurcation_to_L_m=get_float("d_bifurcation_to_L_m"),
+        n_turns_bifurcation_to_L=get_int("n_turns_bifurcation_to_L"),
+        d_upper_m=get_float("d_upper_m"),
+        d_lower_m=get_float("d_lower_m"),
+        d_return_segment_upper_m=get_float("d_return_segment_upper_m"),
+        d_return_segment_lower_m=get_float("d_return_segment_lower_m"),
+        d_exit_off_U_m=get_float("d_exit_off_U_m"),
+        n_turns_exit_off_U=get_int("n_turns_exit_off_U"),
+        d_exit_off_L_m=get_float("d_exit_off_L_m"),
+        n_turns_exit_off_L=get_int("n_turns_exit_off_L"),
+        d_exit_on_U_m=get_float("d_exit_on_U_m"),
+        n_turns_exit_on_U=get_int("n_turns_exit_on_U"),
+        d_exit_on_L_m=get_float("d_exit_on_L_m"),
+        n_turns_exit_on_L=get_int("n_turns_exit_on_L"),
+        d_exit_on_R_m=get_float("d_exit_on_R_m"),
+        n_turns_exit_on_R=get_int("n_turns_exit_on_R"),
+        pos_R_bifurcation_m=get_float("pos_R_bifurcation_m"),
+        d_R_shortcut_to_L_m=get_float("d_R_shortcut_to_L_m"),
+        n_turns_R_shortcut_to_L=get_int("n_turns_R_shortcut_to_L"),
+        d_R_bifurcation_to_reception_m=get_float("d_R_bifurcation_to_reception_m"),
+        n_turns_R_bifurcation_to_reception=get_int("n_turns_R_bifurcation_to_reception"),
+        t_bifurcation_headway_s=get_float("t_bifurcation_headway_s"),
+        t_merge_window_forward_s=get_float("t_merge_window_forward_s"),
+        t_merge_window_backward_s=get_float("t_merge_window_backward_s"),
+        wing_by_exit=wing_by_exit,
+    )
+
+
 def build_input_model_from_excel(
     excel_path: str | Path,
     config: SimulationConfig,
     os_per_hour: float = 693.0,
     distance_between_consecutive_exits_m: float = 5.0,
-) -> InputModel:
+) -> tuple[InputModel, Geometry]:
     """
-    Construye InputModel leyendo data_entry.xlsx.
-    Recibe config para derivar tiempos de release.
+    Construye (InputModel, Geometry) leyendo data_entry.xlsx.
+    Recibe config para derivar tiempos de release y velocidad efectiva.
     """
     excel_path = Path(excel_path)
 
@@ -48,13 +104,20 @@ def build_input_model_from_excel(
         destination_df["probability"].astype(float),
     ))
 
+    # Ahora destination_to_exit tiene una columna adicional 'wing'
     dest_exit_df = pd.read_excel(
         excel_path, sheet_name="destination_to_exit",
-        usecols=["destination_id", "exit_id"],
-    ).dropna(subset=["destination_id", "exit_id"])
+        usecols=["destination_id", "exit_id", "wing"],
+    ).dropna(subset=["destination_id", "exit_id", "wing"])
     destination_to_exit = dict(zip(
         dest_exit_df["destination_id"].astype(str),
         dest_exit_df["exit_id"].astype(str),
+    ))
+    # Mapeo exit -> wing (un mismo exit puede aparecer en multiples destinos
+    # pero siempre con la misma wing; usamos drop_duplicates por seguridad)
+    wing_by_exit = dict(zip(
+        dest_exit_df["exit_id"].astype(str),
+        dest_exit_df["wing"].astype(str).str.lower(),
     ))
 
     segment_df = pd.read_excel(
@@ -91,7 +154,7 @@ def build_input_model_from_excel(
         config=config, max_os_per_stop=max(rack_prep_time_by_n_os),
     )
 
-    return InputModel(
+    input_model = InputModel(
         config=config,
         os_per_hour=os_per_hour,
         destination_distribution=destination_distribution,
@@ -106,6 +169,16 @@ def build_input_model_from_excel(
         turns_between_exits=4,
         turns_last_exit_to_return=3,
     )
+
+    # Construir Geometry a partir de la hoja board_geometry + wings
+    board = _load_board_geometry(excel_path, wing_by_exit)
+    geometry = Geometry(
+        board=board,
+        effective_speed_mps=config.effective_speed_mps,
+        turn_time_s=config.turn_time_s,
+    )
+
+    return input_model, geometry
 
 
 # # -- Filtro de warmup -----------------------------------------------------------
@@ -156,6 +229,7 @@ def _filter_window(
         "rack_creations":      "time",
         "reception_events":    "time",
         "exit_queue_events":   "time",
+        "exit_queue_length_events": "time",
         "exit_service_events": "time",
         "travel_audit_events": "time",
         "state_snapshots":     "time",
@@ -368,12 +442,120 @@ def summarize_results(
     return summary
 
 
+def summarize_exit_queue_lengths(
+    dfs: dict[str, pd.DataFrame],
+    config: SimulationConfig,
+) -> pd.DataFrame:
+    """
+    Calcula largo de cola por salida en la ventana de medicion.
+
+    La cola medida es la cola logica actual: bots que llegaron a la salida y
+    aun no empiezan el release. Incluye espera por operador y caminata del
+    operador hasta la salida.
+    """
+    events = dfs.get("exit_queue_length_events", pd.DataFrame())
+    columns = [
+        "exit_id",
+        "mean_queue_length",
+        "min_queue_length",
+        "max_queue_length",
+        "queue_entries",
+        "queue_entries_per_hour",
+    ]
+    if events.empty:
+        return pd.DataFrame(columns=columns)
+
+    t_lo = config.warmup_time
+    t_hi = config.arrival_cutoff
+    window_s = max(1e-9, t_hi - t_lo)
+    rows = []
+
+    for exit_id, group in events.groupby("exit_id"):
+        group = group.copy()
+        group["_event_order"] = group["event"].map({"enter_queue": 0, "leave_queue": 1}).fillna(2)
+        group = group.sort_values(["time", "_event_order"], kind="mergesort")
+        current = int(group[group["time"] < t_lo]["delta"].sum())
+        min_len = current
+        max_len = current
+        area = 0.0
+        last_time = t_lo
+        queue_entries = 0
+
+        window_events = group[(group["time"] >= t_lo) & (group["time"] < t_hi)]
+        for event in window_events.itertuples(index=False):
+            event_time = float(event.time)
+            area += current * max(0.0, event_time - last_time)
+            last_time = event_time
+
+            current += int(event.delta)
+            min_len = min(min_len, current)
+            max_len = max(max_len, current)
+            if event.event == "enter_queue":
+                queue_entries += 1
+
+        area += current * max(0.0, t_hi - last_time)
+        rows.append({
+            "exit_id": exit_id,
+            "mean_queue_length": area / window_s,
+            "min_queue_length": min_len,
+            "max_queue_length": max_len,
+            "queue_entries": queue_entries,
+            "queue_entries_per_hour": queue_entries / (window_s / 3600.0),
+        })
+
+    if not rows:
+        return pd.DataFrame(columns=columns)
+
+    out = pd.DataFrame(rows)
+    out["_exit_num"] = out["exit_id"].str.extract(r"(\d+)$").astype(int)
+    out = out.sort_values("_exit_num").drop(columns="_exit_num")
+    return out[columns]
+
+
+def print_exit_queue_length_summary(
+    dfs: dict[str, pd.DataFrame],
+    config: SimulationConfig,
+) -> pd.DataFrame:
+    queue_lengths = summarize_exit_queue_lengths(dfs, config)
+    print("\n=== Largo de cola por salida ===")
+    if queue_lengths.empty:
+        print("No hay eventos de cola por salida para reportar.")
+        return queue_lengths
+
+    printable = queue_lengths.copy()
+    printable["mean_queue_length"] = printable["mean_queue_length"].map(lambda x: f"{x:.2f}")
+    printable["queue_entries_per_hour"] = printable["queue_entries_per_hour"].map(lambda x: f"{x:.1f}")
+    print(printable.to_string(index=False))
+    return queue_lengths
+
+
+def add_exit_queue_length_kpis(summary: dict, queue_lengths: pd.DataFrame) -> None:
+    """Agrega KPIs escalares de largo de cola al summary de una replica."""
+    if queue_lengths.empty:
+        summary.update({
+            "mean_exit_queue_length": 0.0,
+            "max_mean_exit_queue_length": 0.0,
+            "max_exit_queue_length": 0.0,
+            "exits_with_queue": 0,
+        })
+        return
+
+    summary.update({
+        "mean_exit_queue_length": float(queue_lengths["mean_queue_length"].mean()),
+        "max_mean_exit_queue_length": float(queue_lengths["mean_queue_length"].max()),
+        "max_exit_queue_length": float(queue_lengths["max_queue_length"].max()),
+        "exits_with_queue": int((queue_lengths["max_queue_length"] > 0).sum()),
+    })
+
+
 # -- Multiples replicas ---------------------------------------------------------
 def run_replications(
     config: SimulationConfig,
     input_model: InputModel,
+    geometry: Geometry,
     n_replications: int = 1,
     base_seed: int = 42,
+    queue_length_rows: list[dict] | None = None,
 ) -> list[dict]:
     """
     Ejecuta N replicas variando unicamente la semilla aleatoria.
@@ -387,8 +569,11 @@ def run_replications(
     """
     summaries = []
     print(f"\nCorriendo {n_replications} replicas...")
-    print(f"{'Replica':>8}  {'Throughput':>12}  {'Cycle p50':>10}  {'Bot util':>9}  {'Idle':>7}")
-    print("-" * 58)
+    print(
+        f"{'Replica':>8}  {'Throughput':>12}  {'Cycle p50':>10}  "
+        f"{'Bot util':>9}  {'Idle':>7}  {'Q mean':>7}  {'Q max':>5}"
+    )
+    print("-" * 76)
 
     for i in range(n_replications):
         seed = base_seed + i
@@ -399,21 +584,30 @@ def run_replications(
         # Resetear RNG del input model (evita releer Excel)
         input_model.rng = _random.Random(seed)
 
-        metrics = build_and_run_simulation(rep_config, input_model)
+        metrics = build_and_run_simulation(rep_config, input_model, geometry)
         dfs     = metrics.to_dataframes()
         summary = summarize_results(dfs, rep_config)
+        queue_lengths = summarize_exit_queue_lengths(dfs, rep_config)
+        add_exit_queue_length_kpis(summary, queue_lengths)
         summary["replica"] = i + 1
         summaries.append(summary)
+
+        if queue_length_rows is not None and not queue_lengths.empty:
+            for row in queue_lengths.to_dict("records"):
+                row["replica"] = i + 1
+                queue_length_rows.append(row)
 
         print(
             f"{i+1:>8}  "
             f"{summary['throughput_os_per_hour']:>10.0f}/h  "
             f"{summary['p50_cycle_time_s']:>9.1f}s  "
             f"{summary['bot_utilization']*100:>8.1f}%  "
-            f"{summary['bot_util_idle_frac']*100:>6.1f}%"
+            f"{summary['bot_util_idle_frac']*100:>6.1f}%  "
+            f"{summary['mean_exit_queue_length']:>7.2f}  "
+            f"{summary['max_exit_queue_length']:>5.0f}"
         )
 
-    print("-" * 58)
+    print("-" * 76)
     return summaries
 
 
@@ -477,6 +671,9 @@ def _print_aggregated_summary(agg: dict, analytical_targets: dict) -> None:
         ("bot_utilization",         "Bot utilizacion",      "bot_utilization"),
         ("bot_util_idle_frac",      "Bot idle",              None),
         ("mean_exit_queue_delay_s", "Queue delay media (s)", "mean_queue_delay_s"),
+        ("mean_exit_queue_length",  "Queue largo medio",     None),
+        ("max_exit_queue_length",   "Queue largo max",       None),
+        ("exits_with_queue",        "Salidas con cola",      None),
     ]
 
     for key, label, target_key in kpis:
@@ -509,7 +706,7 @@ def main():
     # -- Configuracion ------------------------------------------------------
     config = build_peak_config()
 
-    input_model = build_input_model_from_excel(
+    input_model, geometry = build_input_model_from_excel(
         excel_path="src/inputs_data/data_entry.xlsx",
         config=config,
         os_per_hour=693.0,
@@ -528,12 +725,15 @@ def main():
 
     # -- Replica unica (dashboard detallado) --------------------------------
     print("Corriendo replica base para dashboard detallado...")
-    metrics = build_and_run_simulation(config, input_model)
+    metrics = build_and_run_simulation(config, input_model, geometry)
     dfs     = metrics.to_dataframes()
     summary = summarize_results(dfs, config)
+    exit_queue_lengths = summarize_exit_queue_lengths(dfs, config)
+    add_exit_queue_length_kpis(summary, exit_queue_lengths)
 
     print("\n=== Replica base ===")
     pprint({k: v for k, v in summary.items() if not k.endswith("_s") or "time" in k})
+    print_exit_queue_length_summary(dfs, config)
 
     build_dashboard(
         dfs=dfs,
@@ -546,6 +746,8 @@ def main():
     for name, df in dfs.items():
         if not df.empty:
             df.to_csv(f"outputs/{name}.csv", index=False)
+    if not exit_queue_lengths.empty:
+        exit_queue_lengths.to_csv("outputs/exit_queue_length_summary.csv", index=False)
 
     # -- Multiples replicas -------------------------------------------------
     N_REPLICATIONS = 30   # ← ajustar segun tiempo disponible
@@ -553,11 +755,14 @@ def main():
     # Resetear RNG del input_model al seed base antes de las replicas
     input_model.rng = _random.Random(config.random_seed)
 
+    queue_length_rows: list[dict] = []
     summaries = run_replications(
         config=config,
         input_model=input_model,
+        geometry=geometry,
         n_replications=N_REPLICATIONS,
         base_seed=config.random_seed,
+        queue_length_rows=queue_length_rows,
     )
     agg = aggregate_replications(summaries)
 
@@ -574,6 +779,11 @@ def main():
 
     # CSV con una fila por replica
     pd.DataFrame(summaries).to_csv("outputs/replications_summary.csv", index=False)
+    if queue_length_rows:
+        pd.DataFrame(queue_length_rows).to_csv(
+            "outputs/exit_queue_length_by_replica.csv",
+            index=False,
+        )
     print("Outputs exportados en outputs/")
 
 

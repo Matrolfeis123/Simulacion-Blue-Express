@@ -4,9 +4,11 @@ from typing import Dict, List, Optional
 
 import simpy
 
+from geometry import Geometry
 from inputs import InputModel
 from metrics import MetricsCollector
 from models import Bot, OS, RackMission, SimulationConfig
+from operators import OperatorPool
 
 
 class WarehouseSimulation:
@@ -16,20 +18,38 @@ class WarehouseSimulation:
         config: SimulationConfig,
         input_model: InputModel,
         metrics: MetricsCollector,
+        geometry: Geometry,
     ) -> None:
         self.env = env
         self.config = config
         self.input_model = input_model
         self.metrics = metrics
+        self.geometry = geometry
 
         # -----------------------------
         # Resources
         # -----------------------------
         self.reception = simpy.Resource(env, capacity=config.n_receiving_operators)
 
-        self.exit_resources: Dict[str, simpy.Resource] = {
-            exit_id: simpy.Resource(env, capacity=1)
-            for exit_id in self.input_model.get_all_exit_ids()
+        # Operadores moviles segmentados por ala. Reemplaza el viejo
+        # exit_resources (1 Resource por exit). Politica: mas cercano al exit.
+        # Con n_operators_upper = n_exits_upper y n_operators_lower = n_exits_lower
+        # el comportamiento debe ser equivalente al modelo viejo (1 op por exit).
+        self.operator_pools: Dict[str, OperatorPool] = {
+            "upper": OperatorPool(
+                env=env,
+                wing="upper",
+                n_operators=config.n_operators_upper,
+                geometry=geometry,
+                walking_speed_mps=config.operator_walking_speed_mps,
+            ),
+            "lower": OperatorPool(
+                env=env,
+                wing="lower",
+                n_operators=config.n_operators_lower,
+                geometry=geometry,
+                walking_speed_mps=config.operator_walking_speed_mps,
+            ),
         }
 
         self.pending_racks = simpy.Store(env)
@@ -215,45 +235,83 @@ class WarehouseSimulation:
 
             arrival_to_exit = self.env.now
             self._change_bot_state(bot, "waiting_exit")
+            self.metrics.record_exit_queue_length_change(
+                exit_id=exit_id,
+                time=arrival_to_exit,
+                delta=1,
+                event="enter_queue",
+                bot_id=bot.bot_id,
+                rack_id=rack.rack_id,
+            )
 
-            with self.exit_resources[exit_id].request() as req:
-                yield req
+            # Modelo de operadores moviles segmentados:
+            # El pool maneja internamente (a) espera por operador libre,
+            # (b) caminata del operador hasta el exit, y (c) ejecucion del release.
+            # El "queue_delay" desde la perspectiva del bot es la suma de
+            # wait_for_operator + walking_time. El release_time es el mismo de antes.
+            wing = self.geometry.wing_of(exit_id)
+            n_os_stop = rack.os_count_by_exit[exit_id]
+            release_time = self.input_model.get_release_time(n_os_stop)
 
-                queue_delay = self.env.now - arrival_to_exit
-                rack.queue_time_total += queue_delay
-                self.metrics.record_exit_queue(exit_id, queue_delay, self.env.now)
-
-                n_os_stop = rack.os_count_by_exit[exit_id]
-                release_time = self.input_model.get_release_time(n_os_stop)
-                rack.release_time_total += release_time
-                service_start = self.env.now
-
-                self.metrics.record_exit_service(
+            service_request_time = self.env.now
+            record = yield self.env.process(
+                self.operator_pools[wing].request_service(
+                    bot_id=bot.bot_id,
+                    rack_id=rack.rack_id,
                     exit_id=exit_id,
                     release_time_s=release_time,
                     n_os_stop=n_os_stop,
-                    time=self.env.now,
                 )
+            )
 
-                self._change_bot_state(bot, "traveling")
-                yield self.env.timeout(release_time)
-                service_end = self.env.now
+            # Tiempo total que el bot esperó antes de empezar el release
+            # = wait_for_operator + walking_time del operador.
+            queue_delay = record.wait_for_operator_s + record.walking_time_s
+            rack.queue_time_total += queue_delay
+            rack.release_time_total += release_time
+            service_start = record.arrival_time
+            service_end = record.end_time
+            self.metrics.record_exit_queue_length_change(
+                exit_id=exit_id,
+                time=service_start,
+                delta=-1,
+                event="leave_queue",
+                bot_id=bot.bot_id,
+                rack_id=rack.rack_id,
+            )
 
-                self.metrics.record_travel_audit_event(
-                    {
-                        "time": service_end,
-                        "event_type": "exit_stop_service",
-                        "bot_id": bot.bot_id,
-                        "rack_id": rack.rack_id,
-                        "stop_index": stop_idx + 1,
-                        "exit_id": exit_id,
-                        "queue_delay_s": queue_delay,
-                        "service_start": service_start,
-                        "service_end": service_end,
-                        "release_time_s": release_time,
-                        "n_os_stop": n_os_stop,
-                    }
-                )
+            # Registrar metricas compatibles con el dashboard existente
+            self.metrics.record_exit_queue(exit_id, queue_delay, service_start)
+            self.metrics.record_exit_service(
+                exit_id=exit_id,
+                release_time_s=release_time,
+                n_os_stop=n_os_stop,
+                time=service_start,
+            )
+            # Metrica nueva: detalle del servicio del operador
+            self.metrics.record_operator_service(record)
+
+            self._change_bot_state(bot, "traveling")
+
+            self.metrics.record_travel_audit_event(
+                {
+                    "time": service_end,
+                    "event_type": "exit_stop_service",
+                    "bot_id": bot.bot_id,
+                    "rack_id": rack.rack_id,
+                    "stop_index": stop_idx + 1,
+                    "exit_id": exit_id,
+                    "queue_delay_s": queue_delay,
+                    "service_start": service_start,
+                    "service_end": service_end,
+                    "release_time_s": release_time,
+                    "n_os_stop": n_os_stop,
+                    "operator_id": record.operator_id,
+                    "walking_time_s": record.walking_time_s,
+                    "walking_distance_m": record.walking_distance_m,
+                    "wait_for_operator_s": record.wait_for_operator_s,
+                }
+            )
 
         # ----- Return -----
         self._change_bot_state(bot, "returning")
@@ -394,6 +452,7 @@ class WarehouseSimulation:
 def build_and_run_simulation(
     config: SimulationConfig,
     input_model: InputModel,
+    geometry: Geometry,
 ) -> MetricsCollector:
     env = simpy.Environment()
     metrics = MetricsCollector()
@@ -403,9 +462,20 @@ def build_and_run_simulation(
         config=config,
         input_model=input_model,
         metrics=metrics,
+        geometry=geometry,
     )
     simulation.start()
 
     # La simulación corre durante simulation_horizon (warmup incluido)
     env.run(until=config.simulation_horizon)
+
+    # Cerrar los acumuladores de los operadores al final
+    for pool in simulation.operator_pools.values():
+        pool.finalize(env.now)
+    # Adjuntar resumen de operadores al metrics collector para reporting
+    metrics.operator_summary = {
+        wing: pool.utilization_summary(t_window_s=config.effective_horizon)
+        for wing, pool in simulation.operator_pools.items()
+    }
+
     return metrics
